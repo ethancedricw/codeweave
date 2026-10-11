@@ -1,0 +1,43 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    url: jdbc:postgresql://10.10.10.20:5432/codeweave
+    username: codeweave_prod
+    password: 'CwProdDbPassword2026!'
+  data:
+    redis:
+      host: 10.10.10.21
+      port: 6379
+      password: 'CwProdRedisPassword2026!'
+      database: 0
+
+server:
+  port: 8080
+
+sa-token:
+  jwt-secret-key: codeweave-production-jwt-key-2026-enterprise-control-plane
+
+codeweave:
+  workspace:
+    root: /srv/codeweave/workspaces
+  security:
+    encryption-key: codeweave-production-model-key-2026-change-before-deploy
+  agent:
+    dsh:
+      base-url: http://127.0.0.1:3080
+      console-url: http://127.0.0.1:3080
+      timeout-seconds: 15
+  storage:
+    minio:
+      endpoint: http://10.10.10.22:9000
+      access-key: codeweave_prod
+      secret-key: 'CodeWeaveMinioProduction2026!'
+      bucket: codeweave-snapshots
+      secure: false
+      presigned-url-expiry-seconds: 900
+
+logging:
+  level:
+    com.codeweave: INFO

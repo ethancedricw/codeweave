@@ -1,0 +1,51 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:5432/codeweave
+    username: codeweave
+    password: codeweave
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password: codeweave
+      database: 0
+
+sa-token:
+  jwt-secret-key: codeweave-local-jwt-key-2026-codeweave-workbench
+
+codeweave:
+  workspace:
+    root: /Users/alex/codeweave-backend/workspaces
+  security:
+    encryption-key: codeweave-local-model-key-2026-change-before-production
+  agent:
+    dsh:
+      base-url: http://127.0.0.1:3080
+      console-url: http://127.0.0.1:3080
+      timeout-seconds: 15
+      auth-token: ""
+      auto-start: true
+      working-directory: /Users/alex/deepseek-harness
+      node-command: /Users/alex/.nvm/versions/node/v22.19.0/bin/node
+      launch-args:
+        - --import
+        - tsx/esm
+        - apps/cli/src/bin.ts
+        - web
+        - --no-open
+      startup-timeout-seconds: 15
+  storage:
+    minio:
+      endpoint: http://127.0.0.1:9000
+      access-key: codeweave
+      secret-key: 'CodeWeaveMinio2026!'
+      bucket: codeweave-snapshots
+      secure: false
+      presigned-url-expiry-seconds: 900
+
+logging:
+  level:
+    com.codeweave: DEBUG
