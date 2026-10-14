@@ -571,9 +571,9 @@ function DshConsole({ url, project, nav, onToast }) {
   return <div className="dsh-console-shell"><header className="dsh-console-head"><div><b>Agent 工作台</b><span>{projectLabel}</span></div><div><a className="quiet small" href={frameUrl} target="_blank" rel="noreferrer">在新窗口打开 ↗</a></div></header><div className="dsh-console-body"><iframe className="dsh-console-frame" src={frameUrl} title="CodeWeave Agent 工作台" allow="clipboard-read; clipboard-write" /><aside className={`collab-panel${collabCollapsed ? " collapsed" : ""}`}><div className="collab-toolbar"><button className="collab-toggle" aria-label={collabCollapsed ? '展开项目协作' : '折叠项目协作'} title={collabCollapsed ? '展开项目协作' : '折叠项目协作'} aria-expanded={!collabCollapsed} onClick={() => setCollabCollapsed(value => !value)}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={collabCollapsed ? 'M14 6l-6 6 6 6' : 'M10 6l6 6-6 6'} /></svg></button></div><div className="collab-panel-head"><b>项目协作</b><small>{presence.filter(item => item.online).length} 人在线</small></div><div className="collab-members">{presence.map(item => <div className="collab-member" key={item.userId}><i className={item.online ? 'online' : ''} /><span title={item.displayName || '项目成员'}>{item.displayName || '项目成员'}</span><small>{item.online ? '在线' : '离线'}</small></div>)}</div><div className="collab-panel-head"><b>最近会话</b><small>{collabSessions.length ? `${collabSessions.length} 条` : ''}</small></div><div className="collab-sessions">{collabError && <p className="collab-error" role="status">{collabError}</p>}{collabSessions.length ? collabSessions.map(item => <CollaborationSession item={item} presence={presence} key={item.id} />) : <small className="rail-muted">{collabLoading ? '正在加载会话…' : collabError ? '请稍后查看' : '暂无项目会话，发送第一条消息后会显示在这里'}</small>}</div></aside></div></div>
 }
 
-function DshUnavailable({ nav, message }) {
+function DshUnavailable({ nav, message, onRetry }) {
   const requiresModel = message?.includes('配置至少一个模型')
-  return <div className="dsh-unavailable"><div><small>CODEWEAVE</small><h2>{requiresModel ? '请先配置模型' : 'CodeWeave 控制台暂时不可用'}</h2><p>{message || '请确认 CodeWeave Agent 工作台已启动，并检查后端里的控制台地址和认证 Token。'}</p>{requiresModel ? <button className="primary small" onClick={() => window.dispatchEvent(new CustomEvent('codeweave:open-settings'))}>打开模型配置</button> : <button className="primary small" onClick={() => window.location.reload()}>重新连接</button>}<button className="quiet small" onClick={() => nav('projects')}>返回项目</button></div></div>
+  return <div className="dsh-unavailable"><div><small>CODEWEAVE</small><h2>{requiresModel ? '请先配置模型' : 'CodeWeave 控制台暂时不可用'}</h2><p>{message || '请确认 CodeWeave Agent 工作台已启动，并检查后端里的控制台地址和认证 Token。'}</p>{requiresModel ? <button className="primary small" onClick={() => window.dispatchEvent(new CustomEvent('codeweave:open-settings'))}>打开模型配置</button> : <button className="primary small" onClick={onRetry}>重新连接</button>}<button className="quiet small" onClick={() => nav('projects')}>返回项目</button></div></div>
 }
 
 function DshNoProject({ nav, hasProjects }) {
@@ -775,6 +775,7 @@ export default function App() {
   const [models, setModels] = useState([])
   const [dshConsoleUrl, setDshConsoleUrl] = useState('')
   const [dshConsoleError, setDshConsoleError] = useState('')
+  const [dshRetry, setDshRetry] = useState(0)
   const [toast, setToast] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('codeweave-sidebar-collapsed') === 'true')
@@ -830,7 +831,7 @@ export default function App() {
     setDshConsoleError('')
     api.dshConsole({ projectId: selectedProject.id, name: selectedProject.name }).then(result => { if (!disposed) setDshConsoleUrl(result?.url || '') }).catch(error => { if (!disposed) { setDshConsoleUrl(''); setDshConsoleError(error.status === 409 ? '请先在设置中配置至少一个模型，配置完成后再进入 Agent 工作台。' : (error.message || '')) } })
     return () => { disposed = true }
-  }, [logged, selectedProject?.id, selectedProject?.name, selectedProject?.workspaceReady])
+  }, [logged, selectedProject?.id, selectedProject?.name, selectedProject?.workspaceReady, dshRetry])
   const uploadAvatar = async file => {
     try { setProfile(normalizeProfile(await api.uploadAvatar(file))); setToast('头像已更新') }
     catch (error) { setToast(error.message || '头像上传失败') }
@@ -844,7 +845,7 @@ export default function App() {
   })
   if (!logged) return <Login onLogin={login} />
   let page = <Overview profile={profile} metrics={summary.metrics} collaboration={summary.collaboration} items={items} attention={summary.attention} activity={summary.activity} nav={nav} open={s => { setSession(s); localStorage.setItem('codeweave-session-id', s.id); nav('agent') }} />
-  if (active === 'agent') page = !selectedProject ? <DshNoProject nav={nav} hasProjects={Boolean(summary.projects?.length)} /> : !selectedProject.workspaceReady ? <DshProjectNeedsDirectory project={selectedProject} nav={nav} /> : dshConsoleUrl ? <DshConsole url={dshConsoleUrl} project={selectedProject} nav={nav} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} /> : <DshUnavailable nav={nav} message={dshConsoleError} />
+  if (active === 'agent') page = !selectedProject ? <DshNoProject nav={nav} hasProjects={Boolean(summary.projects?.length)} /> : !selectedProject.workspaceReady ? <DshProjectNeedsDirectory project={selectedProject} nav={nav} /> : dshConsoleUrl ? <DshConsole url={dshConsoleUrl} project={selectedProject} nav={nav} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} /> : <DshUnavailable nav={nav} message={dshConsoleError} onRetry={() => setDshRetry(value => value + 1)} />
   if (active === 'conflicts') page = <Conflicts nav={nav} />
   if (active === 'projects') page = <Projects projects={summary.projects} nav={nav} onProjectsChange={updateProjects} onOpenProject={project => { setSelectedProject(project); localStorage.setItem('codeweave-selected-project', project.id); nav('agent') }} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />
   if (active === 'audit') page = <Audit />

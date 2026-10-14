@@ -4,7 +4,7 @@ Java Spring Boot control plane for the CodeWeave enterprise AI collaboration wor
 
 Stack: Java 17 locally (upgrade target Java 21), Spring Boot, MyBatis-Plus, Redis, Redis Stream, JWT and Sa-Token.
 
-Configuration is split into `application-local.yml` and `application-prod.yml`. Values are written directly in YAML; environment-variable placeholders are intentionally not used.
+Configuration is split into `application-local-win.yml`, `application-local.yml`, and `application-prod.yml`. Windows uses `local-win` by default; macOS/Linux can start with `-Dspring.profiles.active=local`.
 
 ## Run locally
 
@@ -15,15 +15,19 @@ mvn spring-boot:run
 
 The local profile starts on `http://localhost:8080`. The compose file starts PostgreSQL and Redis with the values already written in `application-local.yml`; Redis is used for Sa-Token sessions, session events, shares, and task queues.
 
-In the local profile, the backend starts and stops the Agent runtime with itself. It uses Node 22 or newer from the configured path, launches the DeepSeek Harness checkout, and reads the printed authentication URL automatically. Keep the `working-directory` and `node-command` values in `application-local.yml` aligned with your machine:
+DSH is an independent process. Install the web authentication plugin once inside the DeepSeek Harness checkout:
 
 ```text
-export PATH="$HOME/.nvm/versions/node/v22.19.0/bin:$PATH"
-cd /Users/alex/codeweave-backend
-mvn spring-boot:run
+dsh plugin --profile web add dsh-web-startup-auth@latest
 ```
 
-Set `auto-start: false` if you prefer to manage DSH as a separate process.
+Start DSH separately with the Natapp host trusted by its web security:
+
+```text
+dsh web --trusted-host xaecb942.natappfree.cc
+```
+
+Then start the backend. Keep `codeweave.agent.dsh.auto-start` set to `false`; restarting the backend will not stop or restart DSH.
 
 ## Current API surface
 

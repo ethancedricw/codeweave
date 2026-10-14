@@ -2,7 +2,9 @@ spring:
   application:
     name: codeweave-backend
   profiles:
-    active: local
+    # Windows uses application-local-win.yml by default. macOS/Linux can start with
+    # -Dspring.profiles.active=local to use application-local-mac.yml.
+    active: local-win
   sql:
     init:
       mode: always
