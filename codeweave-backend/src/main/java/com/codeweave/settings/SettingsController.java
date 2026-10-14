@@ -74,7 +74,7 @@ public class SettingsController {
       if (config.encryptedApiKey() == null || config.encryptedApiKey().isBlank()) continue;
       List<String> discovered = catalog.modelIds(config);
       Set<String> ids = new LinkedHashSet<>();
-      if (!config.name().isBlank()) ids.add(config.name());
+      if (!config.modelId().isBlank()) ids.add(config.modelId());
       ids.addAll(discovered);
       for (String id : ids) {
         Map<String, Object> item = new LinkedHashMap<>();
@@ -83,7 +83,7 @@ public class SettingsController {
         item.put("modelId", id);
         item.put("name", id);
         item.put("providerName", config.name());
-        item.put("defaultModel", config.defaultModel() && id.equals(config.name()));
+        item.put("defaultModel", config.defaultModel() && id.equals(config.modelId()));
         item.put("discovered", discovered.contains(id));
         items.add(item);
       }
@@ -160,12 +160,15 @@ public class SettingsController {
   public Map<String, Object> createModel(@RequestBody Map<String, Object> request) {
     StpUtil.checkLogin();
     requireText(request, "name");
+    requireText(request, "modelId");
     requireText(request, "endpoint");
     requireText(request, "apiKey");
     String owner = currentUser(); String id = UUID.randomUUID().toString();
     boolean defaultModel = Boolean.TRUE.equals(request.get("defaultModel"));
     if (defaultModel) modelRepository.clearDefaults(owner);
-    ModelConfigRepository.ModelConfig item = new ModelConfigRepository.ModelConfig(id, owner, String.valueOf(request.get("name")), String.valueOf(request.get("endpoint")), encryptKey(request.get("apiKey")), defaultModel, Instant.now());
+    String name = String.valueOf(request.get("name"));
+    String modelId = String.valueOf(request.getOrDefault("modelId", name)).trim();
+    ModelConfigRepository.ModelConfig item = new ModelConfigRepository.ModelConfig(id, owner, name, modelId, String.valueOf(request.get("endpoint")), encryptKey(request.get("apiKey")), defaultModel, Instant.now());
     modelRepository.save(item);
     return publicModel(item);
   }
@@ -178,7 +181,9 @@ public class SettingsController {
     String apiKey = request.get("apiKey") != null && !String.valueOf(request.get("apiKey")).isBlank() ? encryptKey(request.get("apiKey")) : Objects.requireNonNullElse(old.encryptedApiKey(), "");
     boolean defaultModel = request.containsKey("defaultModel") ? Boolean.TRUE.equals(request.get("defaultModel")) : old.defaultModel();
     if (defaultModel) modelRepository.clearDefaults(owner);
-    ModelConfigRepository.ModelConfig item = new ModelConfigRepository.ModelConfig(id, owner, String.valueOf(request.getOrDefault("name", old.name())), String.valueOf(request.getOrDefault("endpoint", old.endpoint())), apiKey, defaultModel, Instant.now());
+    String name = String.valueOf(request.getOrDefault("name", old.name()));
+    String modelId = String.valueOf(request.getOrDefault("modelId", old.modelId())).trim();
+    ModelConfigRepository.ModelConfig item = new ModelConfigRepository.ModelConfig(id, owner, name, modelId, String.valueOf(request.getOrDefault("endpoint", old.endpoint())), apiKey, defaultModel, Instant.now());
     modelRepository.save(item);
     return publicModel(item);
   }
@@ -191,7 +196,7 @@ public class SettingsController {
     ModelConfigRepository.ModelConfig deleted = modelRepository.find(owner, id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模型不存在"));
     modelRepository.delete(owner, id);
     if (deleted.defaultModel()) {
-      modelRepository.findAll(owner).stream().findFirst().ifPresent(next -> modelRepository.save(new ModelConfigRepository.ModelConfig(next.id(), next.ownerId(), next.name(), next.endpoint(), next.encryptedApiKey(), true, Instant.now())));
+      modelRepository.findAll(owner).stream().findFirst().ifPresent(next -> modelRepository.save(new ModelConfigRepository.ModelConfig(next.id(), next.ownerId(), next.name(), next.modelId(), next.endpoint(), next.encryptedApiKey(), true, Instant.now())));
     }
   }
 
@@ -199,7 +204,7 @@ public class SettingsController {
   public Map<String, Object> testModel(@PathVariable String id) {
     StpUtil.checkLogin();
     ModelConfigRepository.ModelConfig item = modelRepository.find(currentUser(), id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "模型不存在"));
-    return probeModel(item.name(), item.endpoint(), item.encryptedApiKey().isBlank() ? "" : crypto.decrypt(item.encryptedApiKey()));
+    return probeModel(item.modelId(), item.endpoint(), item.encryptedApiKey().isBlank() ? "" : crypto.decrypt(item.encryptedApiKey()));
   }
 
   @PostMapping("/models/test-connection")
@@ -354,6 +359,7 @@ public class SettingsController {
     item.put("departmentId", request.getOrDefault("departmentId", "engineering"));
     item.put("gender", genderFrom(request.get("gender")));
     item.put("status", "active");
+    item.put("password", "Aa123456");
     redis.opsForHash().put(USER_HASH, id, write(item));
     item.put("id", id);
     item.put("avatarUrl", null);
@@ -476,7 +482,7 @@ public class SettingsController {
     if (base.endsWith("/datasets")) return base;
     return base.endsWith("/api/v1") ? base + "/datasets" : base + "/api/v1/datasets";
   }
-  private Map<String, Object> publicModel(ModelConfigRepository.ModelConfig item) { Map<String, Object> result = new LinkedHashMap<>(); result.put("id", item.id()); result.put("name", item.name()); result.put("endpoint", item.endpoint()); result.put("defaultModel", item.defaultModel()); result.put("updatedAt", item.updatedAt().toString()); result.put("hasApiKey", item.encryptedApiKey() != null && !item.encryptedApiKey().isBlank()); return result; }
+  private Map<String, Object> publicModel(ModelConfigRepository.ModelConfig item) { Map<String, Object> result = new LinkedHashMap<>(); result.put("id", item.id()); result.put("name", item.name()); result.put("modelId", item.modelId()); result.put("endpoint", item.endpoint()); result.put("defaultModel", item.defaultModel()); result.put("updatedAt", item.updatedAt().toString()); result.put("hasApiKey", item.encryptedApiKey() != null && !item.encryptedApiKey().isBlank()); return result; }
   private void seedAdminIfNeeded() { if (redis.opsForHash().size(USER_HASH) == 0) { Map<String, Object> admin = new LinkedHashMap<>(); admin.put("displayName", "Lin"); admin.put("email", "lin@company.com"); admin.put("role", "admin"); admin.put("gender", "male"); admin.put("status", "active"); redis.opsForHash().put(USER_HASH, "demo-user", write(admin)); } }
   private String genderFrom(Object value) { return "female".equals(String.valueOf(value)) ? "female" : "male"; }
   private String avatarUrl(String userId) {

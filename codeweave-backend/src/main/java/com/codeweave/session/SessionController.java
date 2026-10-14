@@ -15,12 +15,35 @@ import java.time.Instant; import java.util.*;
     redis.opsForHash().values(SESSION_HASH).forEach(raw -> {
       try {
         Map<String, Object> item = mapper.readValue(String.valueOf(raw), new TypeReference<Map<String,Object>>() {});
-        if (StpUtil.getLoginIdAsString().equals(String.valueOf(item.getOrDefault("ownerId", "")))) items.add(item);
+        if (sessionVisibleToCurrentUser(item)) items.add(item);
       }
       catch (Exception ignored) { }
     });
     items.sort(Comparator.comparing(item -> String.valueOf(item.getOrDefault("updatedAt", "")), Comparator.reverseOrder()));
     return Map.of("items", items.stream().limit(50).toList());
+  }
+
+  /** A project session is visible to every member of that project, while an
+   * unassigned session remains private to its owner. */
+  private boolean sessionVisibleToCurrentUser(Map<String, Object> session) {
+    String userId = StpUtil.getLoginIdAsString();
+    if (userId.equals(String.valueOf(session.getOrDefault("ownerId", "")))) return true;
+    String projectId = String.valueOf(session.getOrDefault("projectId", "")).trim();
+    if (projectId.isBlank()) return false;
+    Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
+    if (raw == null) return false;
+    try {
+      Map<String, Object> project = mapper.readValue(String.valueOf(raw), new TypeReference<Map<String,Object>>() {});
+      Object membersRaw = project.get("members");
+      if (membersRaw instanceof Collection<?> members) {
+        for (Object member : members) {
+          if (member instanceof Map<?, ?> row && userId.equals(String.valueOf(row.get("userId")))) return true;
+        }
+      }
+      return userId.equals(String.valueOf(project.getOrDefault("ownerId", "")));
+    } catch (Exception ignored) {
+      return false;
+    }
   }
   @PostMapping("/{id}/events") public Map<String,Object> append(@PathVariable String id,@RequestBody Map<String,Object> event){ StpUtil.checkLogin(); String eid=UUID.randomUUID().toString(); redis.opsForStream().add("cw:session:events",Map.of("eventId",eid,"sessionId",id,"createdAt",Instant.now().toString(),"payload",event.toString())); return Map.of("eventId",eid,"sessionId",id); }
 }

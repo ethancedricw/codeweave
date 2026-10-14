@@ -5,6 +5,10 @@ import java.net.URI;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.time.Instant;
+import java.util.Base64;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,6 +28,45 @@ final class DshConsoleAddress {
   static String authToken(DshProperties properties) {
     URI base = URI.create(properties.getBaseUrl());
     return configuredToken(properties, base, browserUri(properties, base));
+  }
+
+  /** Short-lived tenant ticket verified by dsh BrowserAuth with the launch token. */
+  static String tenantTicket(DshProperties properties, String tenantId, String projectId) {
+    String token = authToken(properties);
+    if (token == null || token.isBlank() || tenantId == null || tenantId.isBlank()) return "";
+    long expiresAt = Instant.now().toEpochMilli() + 5 * 60 * 1000L;
+    StringBuilder json = new StringBuilder("{\"version\":1,\"tenantId\":").append(jsonString(tenantId));
+    if (projectId != null && !projectId.isBlank()) json.append(",\"projectId\":").append(jsonString(projectId));
+    json.append(",\"expiresAt\":").append(expiresAt).append('}');
+    String body = Base64.getUrlEncoder().withoutPadding().encodeToString(json.toString().getBytes(StandardCharsets.UTF_8));
+    try {
+      Mac mac = Mac.getInstance("HmacSHA256");
+      mac.init(new SecretKeySpec(token.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+      String signature = Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(body.getBytes(StandardCharsets.UTF_8)));
+      return "v1." + body + "." + signature;
+    } catch (Exception error) {
+      throw new DeepSeekHarnessClient.DshException("Unable to sign the DSH tenant ticket.");
+    }
+  }
+
+  /** Signature carried by the DSH provider URL when it calls CodeWeave's LLM proxy. */
+  static String proxySignature(DshProperties properties, String ownerId, String projectId, String modelId) {
+    String payload = String.join("\n", ownerId == null ? "" : ownerId, projectId == null ? "" : projectId, modelId == null ? "" : modelId);
+    try {
+      Mac mac = Mac.getInstance("HmacSHA256");
+      mac.init(new SecretKeySpec(properties.getProxySecret().getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+      return Base64.getUrlEncoder().withoutPadding().encodeToString(mac.doFinal(payload.getBytes(StandardCharsets.UTF_8)));
+    } catch (Exception error) {
+      throw new DeepSeekHarnessClient.DshException("Unable to sign the CodeWeave model proxy request.");
+    }
+  }
+
+  private static String jsonString(String value) {
+    try {
+      return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
+    } catch (Exception error) {
+      throw new DeepSeekHarnessClient.DshException("Unable to encode the DSH tenant ticket.");
+    }
   }
 
   private static URI browserUri(DshProperties properties, URI base) {

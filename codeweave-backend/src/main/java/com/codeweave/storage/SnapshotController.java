@@ -6,11 +6,14 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.MediaType;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Collection;
 
 @RestController
 @RequestMapping("/api/workspace/projects/{projectId}/snapshots")
@@ -26,6 +29,21 @@ public class SnapshotController {
   public Map<String, Object> upload(@PathVariable String projectId, @RequestPart("file") MultipartFile file) {
     StpUtil.checkLogin();
     String ownerId = StpUtil.getLoginIdAsString();
+    Object rawProject = redis.opsForHash().get("cw:workspace:projects", projectId);
+    if (rawProject == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "项目不存在");
+    try {
+      Map<String, Object> project = mapper.readValue(String.valueOf(rawProject), new TypeReference<>() {});
+      boolean member = String.valueOf(project.getOrDefault("ownerId", "")).equals(ownerId);
+      Object members = project.get("members");
+      if (members instanceof Collection<?> collection) {
+        member = member || collection.stream().anyMatch(item -> item instanceof Map<?, ?> map && ownerId.equals(String.valueOf(map.get("userId"))));
+      }
+      if (!member) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "你不是该项目成员");
+    } catch (ResponseStatusException error) {
+      throw error;
+    } catch (Exception error) {
+      throw new IllegalStateException("项目状态读取失败", error);
+    }
     MinioStorageService.StoredObject object = storage.upload(ownerId + "/" + projectId + "/snapshots", file);
     Map<String, Object> workspace = provisioning.materializeSnapshot(projectId, file);
     Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);

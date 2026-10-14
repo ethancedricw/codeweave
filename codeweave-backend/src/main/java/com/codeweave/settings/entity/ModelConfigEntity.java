@@ -12,6 +12,7 @@ public class ModelConfigEntity {
   private String id;
   private String ownerId;
   private String name;
+  private String modelId;
   private String endpoint;
   @TableField("api_key_ciphertext")
   private String encryptedApiKey;
@@ -24,6 +25,8 @@ public class ModelConfigEntity {
   public void setOwnerId(String ownerId) { this.ownerId = ownerId; }
   public String getName() { return name; }
   public void setName(String name) { this.name = name; }
+  public String getModelId() { return modelId; }
+  public void setModelId(String modelId) { this.modelId = modelId; }
   public String getEndpoint() { return endpoint; }
   public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
   public String getEncryptedApiKey() { return encryptedApiKey; }

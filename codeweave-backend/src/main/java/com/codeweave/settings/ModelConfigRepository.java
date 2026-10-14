@@ -11,7 +11,12 @@ import java.util.Optional;
 
 @Repository
 public class ModelConfigRepository {
-  public record ModelConfig(String id, String ownerId, String name, String endpoint, String encryptedApiKey, boolean defaultModel, Instant updatedAt) {}
+  public record ModelConfig(String id, String ownerId, String name, String modelId, String endpoint, String encryptedApiKey, boolean defaultModel, Instant updatedAt) {
+    /** Compatibility for configurations created before display name/model ID were split. */
+    public ModelConfig(String id, String ownerId, String name, String endpoint, String encryptedApiKey, boolean defaultModel, Instant updatedAt) {
+      this(id, ownerId, name, name, endpoint, encryptedApiKey, defaultModel, updatedAt);
+    }
+  }
 
   private final ModelConfigMapper mapper;
 
@@ -38,6 +43,7 @@ public class ModelConfigRepository {
     entity.setId(model.id());
     entity.setOwnerId(model.ownerId());
     entity.setName(model.name());
+    entity.setModelId(model.modelId());
     entity.setEndpoint(model.endpoint());
     entity.setEncryptedApiKey(model.encryptedApiKey());
     entity.setDefaultModel(model.defaultModel());
@@ -46,6 +52,8 @@ public class ModelConfigRepository {
   }
 
   private ModelConfig toModel(ModelConfigEntity entity) {
-    return new ModelConfig(entity.getId(), entity.getOwnerId(), entity.getName(), entity.getEndpoint(), java.util.Objects.requireNonNullElse(entity.getEncryptedApiKey(), ""), entity.isDefaultModel(), entity.getUpdatedAt().toInstant());
+    String modelId = java.util.Objects.requireNonNullElse(entity.getModelId(), "").trim();
+    if (modelId.isBlank()) modelId = entity.getName();
+    return new ModelConfig(entity.getId(), entity.getOwnerId(), entity.getName(), modelId, entity.getEndpoint(), java.util.Objects.requireNonNullElse(entity.getEncryptedApiKey(), ""), entity.isDefaultModel(), entity.getUpdatedAt().toInstant());
   }
 }

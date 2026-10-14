@@ -6,6 +6,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -31,6 +32,10 @@ public class WorkspaceProvisioningService {
   }
 
   public Map<String, Object> provision(String projectId, String type, String repoUrl, String branch, String sourcePath) {
+    return provision(projectId, type, repoUrl, branch, sourcePath, "", "");
+  }
+
+  public Map<String, Object> provision(String projectId, String type, String repoUrl, String branch, String sourcePath, String gitUsername, String gitToken) {
     Path target = pathFor(projectId);
     Map<String, Object> result = new LinkedHashMap<>();
     result.put("serverPath", target.toString());
@@ -40,19 +45,19 @@ public class WorkspaceProvisioningService {
       if ("git".equals(type)) {
         if (repoUrl == null || repoUrl.isBlank()) return failure(result, "Git 仓库地址不能为空");
         if (Files.exists(target.resolve(".git"))) {
-          run(target, "git", "fetch", "--all", "--prune");
-          run(target, "git", "checkout", branch == null || branch.isBlank() ? "main" : branch);
-          run(target, "git", "pull", "--ff-only");
+          runGit(target, gitUsername, gitToken, "git", "fetch", "--all", "--prune");
+          runGit(target, gitUsername, gitToken, "git", "checkout", branch == null || branch.isBlank() ? "main" : branch);
+          runGit(target, gitUsername, gitToken, "git", "pull", "--ff-only");
         } else {
           deleteDirectory(target);
           Files.createDirectories(target.getParent());
           String selectedBranch = branch == null || branch.isBlank() ? "main" : branch;
           try {
-            run(root, "git", "clone", "--depth", "1", "--branch", selectedBranch, repoUrl, target.toString());
+            runGit(root, gitUsername, gitToken, "git", "clone", "--depth", "1", "--branch", selectedBranch, repoUrl, target.toString());
           } catch (IOException branchError) {
             if (!"main".equals(selectedBranch)) throw branchError;
             deleteDirectory(target);
-            run(root, "git", "clone", "--depth", "1", repoUrl, target.toString());
+            runGit(root, gitUsername, gitToken, "git", "clone", "--depth", "1", repoUrl, target.toString());
           }
         }
         result.put("status", "ready");
@@ -75,6 +80,22 @@ public class WorkspaceProvisioningService {
       return failure(result, error.getMessage() == null ? "服务器工作区准备失败" : error.getMessage());
     }
     return result;
+  }
+
+  public void testGit(String repoUrl, String branch, String gitUsername, String gitToken) {
+    if (repoUrl == null || repoUrl.isBlank()) throw new IllegalArgumentException("Git 仓库地址不能为空");
+    try {
+      URI uri = URI.create(repoUrl.trim());
+      if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()) || "ssh".equalsIgnoreCase(uri.getScheme()) || "git".equalsIgnoreCase(uri.getScheme()))) throw new IllegalArgumentException("Git 地址格式不支持");
+      Files.createDirectories(root);
+      String ref = branch == null || branch.isBlank() ? "HEAD" : "refs/heads/" + branch.trim();
+      String output = runGit(root, gitUsername, gitToken, "git", "ls-remote", repoUrl.trim(), ref);
+      if (output.isBlank()) throw new IllegalArgumentException("仓库可连接，但找不到指定分支");
+    } catch (IllegalArgumentException error) {
+      throw error;
+    } catch (Exception error) {
+      throw new IllegalStateException(error.getMessage() == null || error.getMessage().isBlank() ? "Git 仓库连接失败" : error.getMessage());
+    }
   }
 
   private void copyLocalDirectory(String sourcePath, Path target) throws IOException {
@@ -123,14 +144,31 @@ public class WorkspaceProvisioningService {
     return path;
   }
 
-  private void run(Path directory, String... command) throws IOException, InterruptedException {
-    Process process = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true).start();
-    String output = new String(process.getInputStream().readAllBytes());
-    if (!process.waitFor(commandTimeout.toSeconds(), TimeUnit.SECONDS)) {
-      process.destroyForcibly();
-      throw new IOException("服务器同步超时");
+  private String runGit(Path directory, String username, String password, String... command) throws IOException, InterruptedException {
+    Path credentialHome = Files.createTempDirectory("codeweave-git-");
+    try {
+      if (username != null && !username.isBlank() && password != null && !password.isBlank()) {
+        String host = "";
+        for (String value : command) {
+          try { URI uri = URI.create(value); if (uri.getHost() != null) { host = uri.getHost(); break; } } catch (Exception ignored) { }
+        }
+        if (!host.isBlank()) Files.writeString(credentialHome.resolve(System.getProperty("os.name", "").toLowerCase().contains("win") ? "_netrc" : ".netrc"), "machine " + host + " login " + username.replaceAll("[\\r\\n]", "") + " password " + password.replaceAll("[\\r\\n]", "") + "\n", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+      }
+      ProcessBuilder builder = new ProcessBuilder(command).directory(directory.toFile()).redirectErrorStream(true);
+      builder.environment().put("HOME", credentialHome.toString());
+      builder.environment().put("USERPROFILE", credentialHome.toString());
+      builder.environment().put("GIT_TERMINAL_PROMPT", "0");
+      Process process = builder.start();
+      String output = new String(process.getInputStream().readAllBytes());
+      if (!process.waitFor(commandTimeout.toSeconds(), TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        throw new IOException("服务器同步超时");
+      }
+      if (process.exitValue() != 0) throw new IOException(output.isBlank() ? "Git 仓库操作失败" : output.trim());
+      return output;
+    } finally {
+      deleteDirectory(credentialHome);
     }
-    if (process.exitValue() != 0) throw new IOException(output.isBlank() ? "服务器同步失败" : output.trim());
   }
 
   private void unzipSafely(MultipartFile file, Path target) throws IOException {

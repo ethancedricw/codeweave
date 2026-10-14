@@ -1,0 +1,32 @@
+# IDE and editor metadata
+.idea/
+*.iml
+.vscode/
+
+# Java / Maven build output
+**/target/
+*.class
+
+# Node / Vite dependencies and build output
+**/node_modules/
+**/dist/
+.vite/
+
+# Runtime logs and local dumps
+*.log
+*.dump
+*.dumpstream
+
+# Local environment and machine-specific configuration
+.env
+.env.*
+!.env.example
+**/application-local*.yml
+**/application-local*.yaml
+
+# Codex local project binding
+.project-knowledge.json
+
+# OS metadata
+.DS_Store
+Thumbs.db

@@ -13,10 +13,26 @@ import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.HashOperations;
 import org.springframework.data.redis.core.StreamOperations;
+import org.springframework.web.server.ResponseStatusException;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class SessionModelSelectionTest {
+  @Test
+  void accountWithoutModelCannotOpenPersistedDshProviders() {
+    try (var auth = mockStatic(StpUtil.class)) {
+      auth.when(StpUtil::getLoginIdAsString).thenReturn("new-owner");
+      var dsh = mock(DeepSeekHarnessClient.class);
+      var repository = mock(ModelConfigRepository.class);
+      when(repository.findAll("new-owner")).thenReturn(List.of());
+      var controller = new AgentController(dsh, mock(StringRedisTemplate.class), new ObjectMapper(), repository, mock(SecretCryptoService.class));
+
+      assertThrows(ResponseStatusException.class, () -> controller.dshConsole(Map.of()));
+      verifyNoInteractions(dsh);
+      verify(dsh, never()).syncConsoleModel(any(), anyString());
+    }
+  }
+
   @Test
   void selectedProviderModelSurvivesSessionStorageAndIsUsedByNextPrompt() throws Exception {
     try (var auth = mockStatic(StpUtil.class)) {
@@ -42,7 +58,7 @@ class SessionModelSelectionTest {
       assertEquals("discovered", mapper.readTree(saved.get()).path("modelName").asText());
       controller.prompt("session", Map.of("text", "Hello"));
       verify(dsh).prompt(eq("session"), eq("Hello"), eq(List.of()), eq(List.of()), argThat(model ->
-        model.id().equals("config") && model.name().equals("discovered") && model.endpoint().equals(config.endpoint())), eq("test-key"));
+        model.id().equals("config") && model.modelId().equals("discovered") && model.endpoint().equals(config.endpoint())), eq("test-key"));
       verify(repository, never()).save(any());
     }
   }

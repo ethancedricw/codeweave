@@ -10,6 +10,10 @@ public class DshProperties {
   private String baseUrl = "http://127.0.0.1:3080";
   private int timeoutSeconds = 15;
   private String authToken = "";
+  /** Secret used to authenticate DSH's server-side model proxy calls. */
+  private String proxySecret = "";
+  private String proxyBaseUrl = "http://127.0.0.1:8080";
+  private final String generatedProxySecret = java.util.UUID.randomUUID().toString();
   private String consoleUrl = "";
   private boolean autoStart;
   private String workingDirectory = "";
@@ -26,6 +30,10 @@ public class DshProperties {
   public void setTimeoutSeconds(int timeoutSeconds) { this.timeoutSeconds = timeoutSeconds; }
   public String getAuthToken() { return authToken; }
   public void setAuthToken(String authToken) { this.authToken = authToken; }
+  public String getProxySecret() { return proxySecret == null || proxySecret.isBlank() ? (authToken == null || authToken.isBlank() ? generatedProxySecret : authToken) : proxySecret; }
+  public void setProxySecret(String proxySecret) { this.proxySecret = proxySecret; }
+  public String getProxyBaseUrl() { return proxyBaseUrl; }
+  public void setProxyBaseUrl(String proxyBaseUrl) { this.proxyBaseUrl = proxyBaseUrl; }
   public boolean isAutoStart() { return autoStart; }
   public void setAutoStart(boolean autoStart) { this.autoStart = autoStart; }
   public String getWorkingDirectory() { return workingDirectory; }

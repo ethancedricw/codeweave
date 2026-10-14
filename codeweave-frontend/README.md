@@ -21,3 +21,5 @@ The Vite server runs on `http://localhost:5173` and proxies `/api` to the Java b
 - Audit and activity view for enterprise traceability.
 
 The visual system follows the Stitch direction: restrained dark blue-gray surfaces, cyan action color, emerald operational state, amber approval state, rose risk state, and mono typography for runtime details.
+
+The embedded Agent and its new-window link pass `codeweaveLocale=zh`. The Harness locale client must support this page-local override so project members see Chinese regardless of browser language or shared Host preferences. Language changes inside that page remain local; reloading through CodeWeave restores Chinese.

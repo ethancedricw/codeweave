@@ -17,18 +17,18 @@ import java.util.Optional;
 
 @Mapper
 public interface ModelConfigMapper extends BaseMapper<ModelConfigEntity> {
-  @Select("select id, owner_id, name, endpoint, api_key_ciphertext, default_model, updated_at from cw_model_config where owner_id = #{ownerId} order by updated_at desc")
+  @Select("select id, owner_id, name, model_id, endpoint, api_key_ciphertext, default_model, updated_at from cw_model_config where owner_id = #{ownerId} order by updated_at desc")
   @Results(id = "modelConfig", value = @Result(column = "api_key_ciphertext", property = "encryptedApiKey"))
   List<ModelConfigEntity> findAllByOwnerId(@Param("ownerId") String ownerId);
 
-  @Select("select id, owner_id, name, endpoint, api_key_ciphertext, default_model, updated_at from cw_model_config where owner_id = #{ownerId} and id = #{id}")
+  @Select("select id, owner_id, name, model_id, endpoint, api_key_ciphertext, default_model, updated_at from cw_model_config where owner_id = #{ownerId} and id = #{id}")
   @ResultMap("modelConfig")
   Optional<ModelConfigEntity> findByOwnerIdAndId(@Param("ownerId") String ownerId, @Param("id") String id);
 
   @Update("update cw_model_config set default_model = false where owner_id = #{ownerId}")
   int clearDefaults(@Param("ownerId") String ownerId);
 
-  @Insert("insert into cw_model_config (id, owner_id, name, endpoint, api_key_ciphertext, default_model, updated_at) values (#{id}, #{ownerId}, #{name}, #{endpoint}, #{encryptedApiKey}, #{defaultModel}, #{updatedAt}) on conflict (id) do update set name = excluded.name, endpoint = excluded.endpoint, api_key_ciphertext = excluded.api_key_ciphertext, default_model = excluded.default_model, updated_at = excluded.updated_at")
+  @Insert("insert into cw_model_config (id, owner_id, name, model_id, endpoint, api_key_ciphertext, default_model, updated_at) values (#{id}, #{ownerId}, #{name}, #{modelId}, #{endpoint}, #{encryptedApiKey}, #{defaultModel}, #{updatedAt}) on conflict (id) do update set name = excluded.name, model_id = excluded.model_id, endpoint = excluded.endpoint, api_key_ciphertext = excluded.api_key_ciphertext, default_model = excluded.default_model, updated_at = excluded.updated_at")
   int upsert(ModelConfigEntity model);
 
   @Delete("delete from cw_model_config where owner_id = #{ownerId} and id = #{id}")

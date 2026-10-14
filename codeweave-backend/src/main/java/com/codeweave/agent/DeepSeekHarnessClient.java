@@ -29,6 +29,7 @@ public class DeepSeekHarnessClient {
   private final StringRedisTemplate redis;
   private final ModelCatalogService catalog;
   private final Set<String> following = ConcurrentHashMap.newKeySet();
+  private final Map<String, String> sessionTenants = new ConcurrentHashMap<>();
 
   public DeepSeekHarnessClient(DshProperties properties, ObjectMapper mapper, StringRedisTemplate redis, ModelCatalogService catalog) {
     this.properties = properties; this.mapper = mapper;
@@ -43,24 +44,26 @@ public class DeepSeekHarnessClient {
   }
 
   public synchronized String createSession(String cwd, ModelConfig model, String apiKey) {
-    String provider = configureModel(model, apiKey);
-    rpc("settings/update", Map.of("ns", "agent-default-model", "patch", Map.of("provider", provider, "model", model.name())));
+    String tenantId = model.ownerId();
+    String provider = configureModel(model, apiKey, tenantId);
     Map<String, Object> request = new LinkedHashMap<>();
     if (cwd != null && !cwd.isBlank()) request.put("cwd", cwd);
-    Map<String, Object> value = rpc("session/create", Map.of("request", request));
+    Map<String, Object> value = rpc("session/create", Map.of("request", request), tenantId);
     Object id = value.get("sessionId");
     if (!(id instanceof String sessionId) || sessionId.isBlank()) {
       throw new DshException("DSH returned no session ID.");
     }
-    selectModel(sessionId, provider, model.name());
-    startFollow(sessionId);
+    sessionTenants.put(sessionId, tenantId);
+    selectModel(sessionId, provider, model.modelId(), tenantId);
+    startFollow(sessionId, tenantId);
     return sessionId;
   }
 
   public synchronized void prompt(String sessionId, String text, java.util.List<String> receiptIds, java.util.List<Map<String, Object>> images, ModelConfig model, String apiKey) {
-    String provider = configureModel(model, apiKey);
-    selectModel(sessionId, provider, model.name());
-    startFollow(sessionId);
+    String tenantId = sessionTenants.getOrDefault(sessionId, model.ownerId());
+    String provider = configureModel(model, apiKey, tenantId);
+    selectModel(sessionId, provider, model.modelId(), tenantId);
+    startFollow(sessionId, tenantId);
     Map<String, Object> request = new LinkedHashMap<>();
     request.put("requestId", UUID.randomUUID().toString()); request.put("sessionId", sessionId); request.put("mode", "queue");
     var content = new java.util.ArrayList<Map<String, Object>>();
@@ -69,17 +72,22 @@ public class DeepSeekHarnessClient {
     if (images != null) images.forEach(image -> content.add(Map.of("type", "image", "mediaType", image.get("mediaType"), "data", image.get("data"), "name", image.getOrDefault("name", "image"))));
     request.put("content", content);
     request.put("clientTimeZone", "Asia/Shanghai");
-    Map<String, Object> result = rpc("session/prompt", Map.of("request", request));
+    Map<String, Object> result = rpc("session/prompt", Map.of("request", request), tenantId);
     if (!Boolean.TRUE.equals(result.get("accepted"))) throw new DshException("DSH did not accept the message.");
   }
 
   public synchronized void selectModelForSession(String sessionId, ModelConfig model, String apiKey) {
-    String provider = configureModel(model, apiKey);
-    selectModel(sessionId, provider, model.name());
+    String tenantId = sessionTenants.getOrDefault(sessionId, model.ownerId());
+    String provider = configureModel(model, apiKey, tenantId);
+    selectModel(sessionId, provider, model.modelId(), tenantId);
   }
 
   public synchronized void cancel(String sessionId) {
-    rpc("session/cancel", Map.of("request", Map.of("sessionId", sessionId)));
+    cancel(sessionId, sessionTenants.get(sessionId));
+  }
+
+  public synchronized void cancel(String sessionId, String tenantId) {
+    rpc("session/cancel", Map.of("request", Map.of("sessionId", sessionId)), tenantId);
   }
 
   public void checkConnection() {
@@ -90,7 +98,92 @@ public class DeepSeekHarnessClient {
   }
 
   public synchronized String syncConsoleModel(ModelConfig model, String apiKey) {
-    return configureModel(model, apiKey);
+    return configureModel(model, apiKey, model.ownerId());
+  }
+
+  /** Configure a project-scoped provider for the native DSH console. */
+  public synchronized String syncConsoleModel(ModelConfig model, String apiKey, String projectId) {
+    return configureModel(model, apiKey, model.ownerId(), projectId);
+  }
+
+  /**
+   * Remove persisted DSH providers for this tenant before syncing CodeWeave's
+   * current model list. This prevents a new account from inheriting a prior
+   * account's native DSH model configuration.
+   */
+  public synchronized void clearConsoleModels(String tenantId) {
+    if (tenantId == null || tenantId.isBlank()) return;
+    Map<String, Object> described = rpc("settings/describe", Map.of(), tenantId);
+    Map<String, Object> namespace = null;
+    Object namespaces = described.get("namespaces");
+    if (namespaces instanceof Iterable<?> rows) {
+      for (Object row : rows) {
+        if (row instanceof Map<?, ?> map && "llm-pi-ai".equals(String.valueOf(map.get("ns")))) {
+          namespace = mapper.convertValue(map, new TypeReference<Map<String, Object>>() {});
+          break;
+        }
+      }
+    }
+    if (namespace == null) return;
+
+    Set<String> providerNames = new java.util.LinkedHashSet<>();
+    Set<String> credentialRefs = new java.util.LinkedHashSet<>();
+    Object user = namespace.get("user");
+    if (user instanceof Map<?, ?> userMap && userMap.get("providers") instanceof Map<?, ?> providers) {
+      for (Map.Entry<?, ?> entry : providers.entrySet()) {
+        String name = String.valueOf(entry.getKey());
+        if (name.isBlank()) continue;
+        providerNames.add(name);
+        if (entry.getValue() instanceof Map<?, ?> provider) {
+          Object ref = provider.get("apiKeyEnv");
+          if (ref != null && !String.valueOf(ref).isBlank()) credentialRefs.add(String.valueOf(ref));
+        }
+      }
+    }
+
+    if (!providerNames.isEmpty()) {
+      java.util.List<Map<String, Object>> operations = new java.util.ArrayList<>();
+      for (String provider : providerNames) {
+        operations.add(Map.of("op", "unset", "path", java.util.List.of("providers", provider)));
+      }
+      Map<String, Object> mutate = new LinkedHashMap<>();
+      mutate.put("ns", "llm-pi-ai");
+      mutate.put("ops", operations);
+      Object revision = namespace.get("revision");
+      if (revision instanceof Number number) mutate.put("expectedRevision", number.intValue());
+      rpc("settings/mutate", mutate, tenantId);
+    }
+    for (String ref : credentialRefs) {
+      rpc("credentials/unset", Map.of("ref", ref), tenantId);
+    }
+
+    // Do not silently claim success: the user-layer must be empty before the
+    // current CodeWeave model list is written back by the caller.
+    Map<String, Object> after = rpc("settings/describe", Map.of(), tenantId);
+    Object afterNamespaces = after.get("namespaces");
+    if (afterNamespaces instanceof Iterable<?> rows) {
+      for (Object row : rows) {
+        if (row instanceof Map<?, ?> map && "llm-pi-ai".equals(String.valueOf(map.get("ns")))) {
+          Object afterUser = map.get("user");
+          if (afterUser instanceof Map<?, ?> afterUserMap && afterUserMap.get("providers") instanceof Map<?, ?> remaining && !remaining.isEmpty()) {
+            throw new DshException("DSH did not remove persisted model providers.");
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  /** Read lightweight DSH session summaries for the shared project rail. */
+  public synchronized java.util.List<Map<String, Object>> listSessions() {
+    // The session/list descriptor uses the generated internal request field.
+    // Other session RPCs use `request`, but sending that field here makes the
+    // current DSH runtime reject the call with "missing _request".
+    Map<String, Object> value = rpc("session/list", Map.of("_request", Map.of()));
+    Object items = value.get("items");
+    if (!(items instanceof java.util.List<?> rows)) return java.util.List.of();
+    return rows.stream().filter(Map.class::isInstance)
+      .map(row -> mapper.convertValue(row, new TypeReference<Map<String, Object>>() {})).toList();
   }
 
   public String consoleUrl() {
@@ -98,8 +191,16 @@ public class DeepSeekHarnessClient {
   }
 
   public String consoleUrl(String workspaceId, java.util.List<String> providers) {
+    return consoleUrl(workspaceId, providers, "", "");
+  }
+
+  public String consoleUrl(String workspaceId, java.util.List<String> providers, String ownerId, String projectId) {
     String base = consoleUrl();
     base += (base.contains("?") ? "&" : "?") + "codeweaveProviders=" + java.net.URLEncoder.encode(String.join(",", providers), java.nio.charset.StandardCharsets.UTF_8);
+    if (ownerId != null && !ownerId.isBlank()) base += "&codeweaveOwnerId=" + java.net.URLEncoder.encode(ownerId, java.nio.charset.StandardCharsets.UTF_8);
+    if (projectId != null && !projectId.isBlank()) base += "&codeweaveProjectId=" + java.net.URLEncoder.encode(projectId, java.nio.charset.StandardCharsets.UTF_8);
+    String ticket = DshConsoleAddress.tenantTicket(properties, ownerId, projectId);
+    if (!ticket.isBlank()) base += "&codeweaveTicket=" + java.net.URLEncoder.encode(ticket, java.nio.charset.StandardCharsets.UTF_8);
     if (workspaceId == null || workspaceId.isBlank()) return base;
     return base + (base.contains("?") ? "&" : "?")
       + "codeweaveWorkspaceId=" + java.net.URLEncoder.encode(workspaceId, java.nio.charset.StandardCharsets.UTF_8);
@@ -122,8 +223,12 @@ public class DeepSeekHarnessClient {
   }
 
   public synchronized Map<String, Object> uploadFile(String sessionId, byte[] bytes, String name) {
+    return uploadFile(sessionId, bytes, name, sessionTenants.get(sessionId));
+  }
+
+  public synchronized Map<String, Object> uploadFile(String sessionId, byte[] bytes, String name, String tenantId) {
     try {
-      String cookie = cookie();
+      String cookie = cookie(tenantId);
       String query = "?sessionId=" + java.net.URLEncoder.encode(sessionId, java.nio.charset.StandardCharsets.UTF_8)
         + (name == null || name.isBlank() ? "" : "&name=" + java.net.URLEncoder.encode(name, java.nio.charset.StandardCharsets.UTF_8));
       HttpRequest request = HttpRequest.newBuilder(URI.create(normalizedBaseUrl() + "/api/session/uploadFileBinary" + query))
@@ -141,21 +246,38 @@ public class DeepSeekHarnessClient {
     catch (Exception ex) { throw new DshException("Cannot upload the file to DeepSeek Harness."); }
   }
 
-  private String configureModel(ModelConfig model, String apiKey) {
+  private String configureModel(ModelConfig model, String apiKey, String tenantId) {
+    return configureModel(model, apiKey, tenantId, "");
+  }
+
+  private String configureModel(ModelConfig model, String apiKey, String tenantId, String projectId) {
     // A saved connection owns a stable route; selecting a model must not create another provider.
-    String identity = UUID.nameUUIDFromBytes((model.ownerId() + ":" + model.id()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().replace("-", "");
+    String scope = projectId == null ? "" : projectId.trim();
+    String identity = UUID.nameUUIDFromBytes((model.ownerId() + ":" + model.id() + ":" + scope).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().replace("-", "");
     String provider = "codeweave-" + identity;
     String credential = "CODEWEAVE_MODEL_" + identity;
     Set<String> modelIds = new java.util.LinkedHashSet<>();
-    modelIds.add(model.name());
+    modelIds.add(model.modelId());
     modelIds.addAll(catalog.modelIds(model));
-    String displayName = "CodeWeave · " + model.name() + " · " + model.id().substring(0, Math.min(8, model.id().length()));
-    rpc("credentials/set", Map.of("ref", credential, "value", apiKey));
+    String displayName = "CodeWeave · " + model.name() + " · " + model.modelId();
+    // Native DSH calls the proxy server-side. Keep the real model key in CodeWeave;
+    // DSH only receives a non-sensitive marker credential for provider activation.
+    String providerKey = scope.isBlank() ? apiKey : "codeweave-proxy-" + identity;
+    rpc("credentials/set", Map.of("ref", credential, "value", providerKey), tenantId);
+    String baseUrl = model.endpoint().trim().replaceAll("/+$", "");
+    if (!scope.isBlank()) {
+      String signature = DshConsoleAddress.proxySignature(properties, model.ownerId(), scope, model.id());
+      baseUrl = properties.getProxyBaseUrl().trim().replaceAll("/+$", "") + "/api/agent/llm-proxy/"
+        + java.net.URLEncoder.encode(model.ownerId(), java.nio.charset.StandardCharsets.UTF_8) + "/"
+        + java.net.URLEncoder.encode(scope, java.nio.charset.StandardCharsets.UTF_8) + "/"
+        + java.net.URLEncoder.encode(model.id(), java.nio.charset.StandardCharsets.UTF_8) + "/"
+        + java.net.URLEncoder.encode(signature, java.nio.charset.StandardCharsets.UTF_8);
+    }
     rpc("settings/update", Map.of("ns", "llm-pi-ai", "patch", Map.of("providers", Map.of(provider, Map.of(
       "displayName", displayName,
       "apiKeyEnv", credential,
       "api", "openai-completions",
-      "baseURL", model.endpoint().trim().replaceAll("/+$", ""),
+      "baseURL", baseUrl,
       "defaultContextWindow", 65536,
       "defaultMaxTokens", 8192,
       "defaultInput", java.util.List.of("text", "image"),
@@ -166,18 +288,18 @@ public class DeepSeekHarnessClient {
         "maxTokens", 8192,
         "input", java.util.List.of("text", "image")
       )).toList()
-    )))));
+    )))), tenantId);
     return provider;
   }
 
-  private void selectModel(String sessionId, String provider, String model) {
-    rpc("session/selectModel", Map.of("request", Map.of("sessionId", sessionId, "provider", provider, "model", model)));
+  private void selectModel(String sessionId, String provider, String model, String tenantId) {
+    rpc("session/selectModel", Map.of("request", Map.of("sessionId", sessionId, "provider", provider, "model", model)), tenantId);
   }
 
-  private void startFollow(String sessionId) {
+  private void startFollow(String sessionId, String tenantId) {
     if (!following.add(sessionId)) return;
     try {
-      String cookie = cookie();
+      String cookie = cookie(tenantId);
       String streamId = UUID.randomUUID().toString();
       String payload = mapper.writeValueAsString(Map.of("type", "open", "streamId", streamId, "endpoint", "session/follow", "payload", Map.of("args", Map.of("request", Map.of("address", Map.of("kind", "session", "sessionId", sessionId), "maxMessages", 100, "assistantStream", true)))));
       WebSocket.Listener listener = new WebSocket.Listener() {
@@ -206,9 +328,11 @@ public class DeepSeekHarnessClient {
     } catch (Exception ex) { following.remove(sessionId); }
   }
 
-  private Map<String, Object> rpc(String method, Map<String, Object> args) {
+  private Map<String, Object> rpc(String method, Map<String, Object> args) { return rpc(method, args, null); }
+
+  private Map<String, Object> rpc(String method, Map<String, Object> args, String tenantId) {
     try {
-      String cookie = cookie();
+      String cookie = cookie(tenantId);
       String body = mapper.writeValueAsString(Map.of("type", "client-request", "rpcId", UUID.randomUUID().toString(), "method", method, "payload", Map.of("args", args)));
       HttpRequest request = HttpRequest.newBuilder(URI.create(normalizedBaseUrl() + "/api/" + method)).timeout(Duration.ofSeconds(properties.getTimeoutSeconds())).header("content-type", "application/json").header("cookie", cookie).POST(HttpRequest.BodyPublishers.ofString(body)).build();
       HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
@@ -237,9 +361,14 @@ public class DeepSeekHarnessClient {
     }
   }
 
-  private String cookie() throws Exception {
+  private String cookie() throws Exception { return cookie(null); }
+
+  private String cookie(String tenantId) throws Exception {
     String token = DshConsoleAddress.authToken(properties);
-    String authUrl = normalizedBaseUrl() + "/" + (token == null || token.isBlank() ? "" : "?token=" + java.net.URLEncoder.encode(token, java.nio.charset.StandardCharsets.UTF_8));
+    String ticket = tenantId == null ? "" : DshConsoleAddress.tenantTicket(properties, tenantId, "");
+    String query = (token == null || token.isBlank() ? "" : "token=" + java.net.URLEncoder.encode(token, java.nio.charset.StandardCharsets.UTF_8))
+      + (ticket.isBlank() ? "" : "&codeweaveTicket=" + java.net.URLEncoder.encode(ticket, java.nio.charset.StandardCharsets.UTF_8));
+    String authUrl = normalizedBaseUrl() + "/" + (query.isBlank() ? "" : "?" + query);
     HttpRequest request = HttpRequest.newBuilder(URI.create(authUrl)).timeout(Duration.ofSeconds(properties.getTimeoutSeconds())).GET().build();
     HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
     if (response.statusCode() == 401 || response.statusCode() == 403) {
@@ -248,9 +377,10 @@ public class DeepSeekHarnessClient {
     if (response.statusCode() != 303 && response.statusCode() / 100 != 2) {
       throw new DshException("DSH authentication returned HTTP " + response.statusCode() + ".");
     }
-    return response.headers().allValues("set-cookie").stream()
+    String result = response.headers().allValues("set-cookie").stream()
       .map(value -> value.split(";", 2)[0]).filter(value -> value.startsWith("dsh-auth-"))
       .findFirst().orElseThrow(() -> new DshException("DSH returned no authentication cookie. Check the runtime token."));
+    return result;
   }
 
   public static final class DshException extends RuntimeException {

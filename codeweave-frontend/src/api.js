@@ -9,13 +9,18 @@ async function request(path, options = {}) {
   const raw = await response.text()
   let data = null
   if (raw.trim()) { try { data = JSON.parse(raw) } catch { data = { message: raw.trim() } } }
-  if (!response.ok) throw new Error(data?.message || `请求失败（${response.status}）`)
+  if (!response.ok) {
+    const error = new Error(data?.message || `请求失败（${response.status}）`)
+    error.status = response.status
+    throw error
+  }
   return data
 }
 
 export const api = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   me: () => request('/auth/me'),
+  changePassword: (password) => request('/auth/password', { method: 'PUT', body: JSON.stringify({ password }) }),
   profile: () => request('/profile'),
   uploadAvatar: async file => {
     const token = localStorage.getItem('codeweave-token')
@@ -28,15 +33,25 @@ export const api = {
   },
   sessions: () => request('/sessions'),
   summary: () => request('/workspace/summary'),
+  heartbeat: () => request('/workspace/presence', { method: 'POST' }),
+  audit: () => request('/workspace/audit'),
   projects: () => request('/workspace/projects'),
   createProject: (payload) => request('/workspace/projects', { method: 'POST', body: JSON.stringify(payload) }),
   updateProject: (id, payload) => request(`/workspace/projects/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   syncProject: id => request(`/workspace/projects/${id}/sync`, { method: 'POST' }),
+  testGitProject: payload => request('/workspace/projects/git/test', { method: 'POST', body: JSON.stringify(payload) }),
   ragflowConfig: () => request('/settings/ragflow'),
   saveRagflowConfig: (payload) => request('/settings/ragflow', { method: 'PUT', body: JSON.stringify(payload) }),
   testRagflowConfig: (payload) => request('/settings/ragflow/test', { method: 'POST', body: JSON.stringify(payload) }),
   ragflowDatasets: () => request('/settings/ragflow/datasets'),
   deleteProject: (id) => request(`/workspace/projects/${id}`, { method: 'DELETE' }),
+  projectMembers: id => request(`/workspace/projects/${id}/members`),
+  projectUsers: () => request('/workspace/users'),
+  addProjectMember: (id, payload) => request(`/workspace/projects/${id}/members`, { method: 'POST', body: JSON.stringify(payload) }),
+  removeProjectMember: (id, userId) => request(`/workspace/projects/${id}/members/${encodeURIComponent(userId)}`, { method: 'DELETE' }),
+  updateProjectMember: (id, userId, payload) => request(`/workspace/projects/${id}/members/${encodeURIComponent(userId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  memberPresence: id => request(`/workspace/projects/${id}/members/presence`, { method: 'POST' }),
+  projectPresence: id => request(`/workspace/projects/${id}/presence`),
   uploadSnapshot: async (projectId, file) => {
     const token = localStorage.getItem('codeweave-token')
     const body = new FormData(); body.append('file', file)
@@ -44,7 +59,6 @@ export const api = {
     if (!response.ok) throw new Error(`快照上传失败（${response.status}）`)
     return response.json()
   },
-  createShare: (payload) => request('/workspace/shares', { method: 'POST', body: JSON.stringify(payload) }),
   createTask: (payload) => request('/workspace/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   createAgentSession: (payload = {}) => request('/agent/sessions', { method: 'POST', body: JSON.stringify(payload) }),
   selectAgentModel: (sessionId, modelId, modelName = '') => request(`/agent/sessions/${sessionId}/model`, { method: 'PUT', body: JSON.stringify({ modelId, ...(modelName ? { modelName } : {}) }) }),
@@ -60,6 +74,7 @@ export const api = {
     return data
   },
   agentEvents: (sessionId) => request(`/agent/sessions/${sessionId}/events`),
+  projectAgentSessions: projectId => request(`/agent/project-sessions?projectId=${encodeURIComponent(projectId)}`),
   dshConsole: (project = {}) => request('/agent/dsh-console', { method: 'POST', body: JSON.stringify({ projectId: project.projectId || project.id || '', projectName: project.name || '' }) }),
   models: () => request('/settings/models'),
   modelCatalog: () => request('/settings/models/catalog'),
@@ -74,6 +89,7 @@ export const api = {
   updateRole: (id, payload) => request(`/settings/roles/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteRole: (id) => request(`/settings/roles/${id}`, { method: 'DELETE' }),
   users: () => request('/settings/users'),
+  departments: () => request('/settings/departments'),
   inviteUser: (payload) => request('/settings/users', { method: 'POST', body: JSON.stringify(payload) }),
   updateUserRole: (id, role) => request(`/settings/users/${id}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
   updateUser: (id, payload) => request(`/settings/users/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),

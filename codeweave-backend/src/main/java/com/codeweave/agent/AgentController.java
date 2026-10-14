@@ -3,6 +3,7 @@ package com.codeweave.agent;
 import cn.dev33.satoken.stp.StpUtil;
 import com.codeweave.config.SecretCryptoService;
 import com.codeweave.settings.ModelConfigRepository;
+import com.codeweave.knowledge.RagflowRetrievalService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.multipart.MultipartFile;
@@ -33,8 +34,14 @@ public class AgentController {
   private final ObjectMapper mapper;
   private final ModelConfigRepository models;
   private final SecretCryptoService crypto;
+  private final RagflowRetrievalService ragflow;
+  /** Backward-compatible constructor for lightweight controller tests. */
   public AgentController(DeepSeekHarnessClient dsh, StringRedisTemplate redis, ObjectMapper mapper, ModelConfigRepository models, SecretCryptoService crypto) {
-    this.dsh = dsh; this.redis = redis; this.mapper = mapper; this.models = models; this.crypto = crypto;
+    this(dsh, redis, mapper, models, crypto, null);
+  }
+  @org.springframework.beans.factory.annotation.Autowired
+  public AgentController(DeepSeekHarnessClient dsh, StringRedisTemplate redis, ObjectMapper mapper, ModelConfigRepository models, SecretCryptoService crypto, RagflowRetrievalService ragflow) {
+    this.dsh = dsh; this.redis = redis; this.mapper = mapper; this.models = models; this.crypto = crypto; this.ragflow = ragflow;
   }
 
   @ExceptionHandler(DeepSeekHarnessClient.DshException.class)
@@ -46,13 +53,22 @@ public class AgentController {
   public ResponseEntity<Map<String, Object>> dshConsole(@RequestBody(required = false) Map<String, Object> request) {
     // The native console controls the whole runtime, so a project-scoped login cannot authorize it.
     StpUtil.checkLogin();
-    dsh.checkConnection();
     var configured = models.findAll(StpUtil.getLoginIdAsString()).stream()
       .filter(model -> model.encryptedApiKey() != null && !model.encryptedApiKey().isBlank()).toList();
-    List<String> providers = configured.stream().map(model -> dsh.syncConsoleModel(model, modelKey(model))).toList();
+    if (configured.isEmpty()) {
+      throw new ResponseStatusException(HttpStatus.CONFLICT, "请先在设置中配置至少一个模型，DSH 不会使用其他账号的模型记录。");
+    }
+    dsh.checkConnection();
+    // DSH persists its own provider settings. Clear this tenant first so an
+    // account with no CodeWeave model configuration cannot reuse an old one.
+    dsh.clearConsoleModels(StpUtil.getLoginIdAsString());
     String projectPath = request == null ? "" : String.valueOf(request.getOrDefault("serverPath", request.getOrDefault("projectPath", ""))).trim();
     String projectName = request == null ? "" : String.valueOf(request.getOrDefault("projectName", "")).trim();
     String projectId = request == null ? "" : String.valueOf(request.getOrDefault("projectId", "")).trim();
+    if (!projectId.isBlank()) requireProjectMember(projectId);
+    List<String> providers = configured.stream().map(model -> projectId.isBlank()
+      ? dsh.syncConsoleModel(model, modelKey(model))
+      : dsh.syncConsoleModel(model, modelKey(model), projectId)).toList();
     String existingWorkspaceId = "";
     if (!projectId.isBlank()) {
       Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
@@ -77,7 +93,7 @@ public class AgentController {
       }
     }
     return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
-      .body(Map.of("url", dsh.consoleUrl(workspaceId, providers), "workspaceId", workspaceId));
+      .body(Map.of("url", dsh.consoleUrl(workspaceId, providers, StpUtil.getLoginIdAsString(), projectId), "workspaceId", workspaceId));
   }
 
   @PostMapping("/sessions")
@@ -91,7 +107,7 @@ public class AgentController {
     session.put("id", sessionId);
     session.put("ownerId", StpUtil.getLoginIdAsString());
     session.put("modelId", model.id());
-    session.put("modelName", model.name());
+    session.put("modelName", model.modelId());
     session.put("dshSessionId", sessionId);
     session.put("title", value(request, "title", "新建协作任务"));
     session.put("projectId", value(request, "projectId", ""));
@@ -104,7 +120,7 @@ public class AgentController {
     session.put("createdAt", Instant.now().toString());
     session.put("updatedAt", Instant.now().toString());
     saveSession(session);
-    recordActivity("agent.started", "Agent 开始处理任务", String.valueOf(session.get("title")), "mint");
+    recordActivity("agent.started", "Agent 开始处理任务", String.valueOf(session.get("title")), "mint", String.valueOf(session.getOrDefault("projectId", "")));
     return Map.of("sessionId", sessionId, "runtime", "deepseek-harness", "session", session);
   }
 
@@ -112,16 +128,23 @@ public class AgentController {
   public Map<String, Object> prompt(@PathVariable String sessionId, @RequestBody Map<String, Object> request) {
     StpUtil.checkLogin(); String text = String.valueOf(request.getOrDefault("text", ""));
     if (text.isBlank() && !(request.get("receiptIds") instanceof List<?> values && !values.isEmpty())) throw new IllegalArgumentException("消息不能为空");
-    Map<String, Object> session = loadSession(sessionId);
-    if (session.containsKey("ownerId") && !StpUtil.getLoginIdAsString().equals(session.get("ownerId"))) {
-      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session belongs to another user.");
-    }
+    Map<String, Object> session = loadOwnedSession(sessionId);
+    requireProjectRole(session, false);
     var model = sessionModel(session);
     List<String> receiptIds = request.get("receiptIds") instanceof List<?> values
       ? values.stream().map(String::valueOf).toList() : List.of();
     List<Map<String, Object>> images = request.get("images") instanceof List<?> values
       ? values.stream().filter(Map.class::isInstance).map(value -> (Map<String, Object>) value).toList() : List.of();
-    dsh.prompt(sessionId, text, receiptIds, images, model, modelKey(model));
+    String projectId = String.valueOf(session.getOrDefault("projectId", "")).trim();
+    String collaborationContext = projectContext(projectId);
+    String knowledgeContext = ragflow == null ? "" : ragflow.retrieve(projectId, StpUtil.getLoginIdAsString(), text);
+    StringBuilder prompt = new StringBuilder();
+    if (!knowledgeContext.isBlank()) prompt.append(knowledgeContext);
+    if (!collaborationContext.isBlank()) { if (prompt.length() > 0) prompt.append("\n\n"); prompt.append(collaborationContext); }
+    if (prompt.length() > 0) prompt.append("\n\n用户最新指令：\n");
+    prompt.append(text);
+    String agentText = prompt.toString();
+    dsh.prompt(sessionId, agentText, receiptIds, images, model, modelKey(model));
     if (!session.isEmpty()) {
       session.put("state", "运行中");
       session.put("detail", "正在处理最新指令");
@@ -133,7 +156,7 @@ public class AgentController {
       if ("新建协作任务".equals(session.get("title"))) session.put("title", shorten(text, 36));
       session.put("updatedAt", Instant.now().toString());
       saveSession(session);
-      recordActivity("agent.prompted", "提交了新的 Agent 指令", String.valueOf(session.getOrDefault("title", sessionId)), "cyan");
+      recordActivity("agent.prompted", "提交了新的 Agent 指令", String.valueOf(session.getOrDefault("title", sessionId)), "cyan", String.valueOf(session.getOrDefault("projectId", "")));
     }
     return Map.of("accepted", true, "sessionId", sessionId);
   }
@@ -141,22 +164,24 @@ public class AgentController {
   @PutMapping("/sessions/{sessionId}/model")
   public Map<String, Object> selectModel(@PathVariable String sessionId, @RequestBody Map<String, Object> request) {
     StpUtil.checkLogin();
-    Map<String, Object> session = loadSession(sessionId);
-    if (session.isEmpty() || !StpUtil.getLoginIdAsString().equals(session.get("ownerId"))) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
+    Map<String, Object> session = loadOwnedSession(sessionId);
+    if (session.isEmpty()) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
+    requireProjectRole(session, false);
     String modelId = String.valueOf(request.getOrDefault("modelId", "")).trim();
     String requestedName = String.valueOf(request.getOrDefault("modelName", "")).trim();
     var model = resolveModelSelection(modelId, requestedName);
     dsh.selectModelForSession(sessionId, model, modelKey(model));
-    session.put("modelId", model.id()); session.put("modelName", model.name()); session.put("updatedAt", Instant.now().toString()); saveSession(session);
-    return Map.of("modelId", model.id() + "::" + model.name(), "name", model.name());
+    session.put("modelId", model.id()); session.put("modelName", model.modelId()); session.put("updatedAt", Instant.now().toString()); saveSession(session);
+    return Map.of("modelId", model.id() + "::" + model.modelId(), "name", model.modelId());
   }
 
   @PostMapping("/sessions/{sessionId}/cancel")
   public Map<String, Object> cancel(@PathVariable String sessionId) {
     StpUtil.checkLogin();
-    Map<String, Object> session = loadSession(sessionId);
-    if (session.isEmpty() || !StpUtil.getLoginIdAsString().equals(session.get("ownerId"))) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
-    dsh.cancel(sessionId);
+    Map<String, Object> session = loadOwnedSession(sessionId);
+    if (session.isEmpty()) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
+    requireProjectRole(session, false);
+    dsh.cancel(sessionId, StpUtil.getLoginIdAsString());
     session.put("state", "已中断"); session.put("detail", "Agent 已中断"); session.put("updatedAt", Instant.now().toString()); saveSession(session);
     return Map.of("accepted", true, "sessionId", sessionId);
   }
@@ -164,13 +189,14 @@ public class AgentController {
   @PostMapping(value = "/sessions/{sessionId}/attachments", consumes = "multipart/form-data")
   public Map<String, Object> uploadAttachment(@PathVariable String sessionId, @RequestPart("file") MultipartFile file) {
     StpUtil.checkLogin();
-    Map<String, Object> session = loadSession(sessionId);
-    if (session.isEmpty() || !StpUtil.getLoginIdAsString().equals(session.get("ownerId"))) {
+    Map<String, Object> session = loadOwnedSession(sessionId);
+    if (session.isEmpty()) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
     }
+    requireProjectRole(session, false);
     if (file.isEmpty() || file.getSize() > 50 * 1024 * 1024) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "File must be between 1 byte and 50 MB.");
     try {
-      Map<String, Object> uploaded = dsh.uploadFile(sessionId, file.getBytes(), file.getOriginalFilename());
+      Map<String, Object> uploaded = dsh.uploadFile(sessionId, file.getBytes(), file.getOriginalFilename(), StpUtil.getLoginIdAsString());
       Object receiptId = uploaded.get("receiptId");
       if (receiptId == null || String.valueOf(receiptId).isBlank()) throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "DeepSeek Harness returned no upload receipt.");
       Map<String, Object> result = new LinkedHashMap<>();
@@ -186,6 +212,7 @@ public class AgentController {
   @GetMapping("/sessions/{sessionId}/events")
   public Map<String, Object> events(@PathVariable String sessionId) {
     StpUtil.checkLogin();
+    loadOwnedSession(sessionId);
     var items = redis.opsForStream().range("cw:agent:events", Range.unbounded()).stream()
       .filter(record -> sessionId.equals(String.valueOf(record.getValue().get("sessionId"))))
       .map(record -> {
@@ -196,6 +223,99 @@ public class AgentController {
         return item;
       }).toList();
     return Map.of("items", items);
+  }
+
+  /** Lightweight native-dsh summaries for the shared project collaboration rail. */
+  @GetMapping("/project-sessions")
+  public Map<String, Object> projectSessions(@RequestParam String projectId) {
+    StpUtil.checkLogin();
+    requireProjectMember(projectId);
+    String projectPath = projectWorkspace(projectId).trim();
+    String normalizedProject = projectPath.replace('\\', '/').replaceAll("/+$", "");
+    String workspaceId = projectWorkspaceId(projectId);
+    List<Map<String, Object>> items = new ArrayList<>();
+    for (Map<String, Object> raw : dsh.listSessions()) {
+      if (Boolean.TRUE.equals(raw.get("blank"))) continue;
+      String cwd = String.valueOf(raw.getOrDefault("cwd", "")).replace('\\', '/').replaceAll("/+$", "");
+      if (!matchesProject(raw, cwd, normalizedProject, workspaceId)) continue;
+      String id = String.valueOf(raw.getOrDefault("sessionId", raw.getOrDefault("id", "")));
+      if (id.isBlank()) continue;
+      Map<String, Object> item = new LinkedHashMap<>();
+      item.put("id", id); item.put("dshSessionId", id); item.put("projectId", projectId);
+      item.put("title", String.valueOf(raw.getOrDefault("title", "Agent 会话")));
+      String ownerId = String.valueOf(raw.getOrDefault("ownerId", ""));
+      if (ownerId.isBlank()) {
+        var tenantSession = java.util.regex.Pattern.compile("^tenant-([0-9a-fA-F-]{36})-").matcher(id);
+        if (tenantSession.find()) ownerId = tenantSession.group(1);
+      }
+      item.put("ownerId", ownerId);
+      item.put("state", Boolean.TRUE.equals(raw.get("running")) ? "运行中" : "已完成");
+      item.put("updatedAt", raw.getOrDefault("updatedAt", raw.getOrDefault("createdAt", Instant.now().toString())));
+      item.put("cwd", cwd);
+      item.put("origin", raw.getOrDefault("origin", ""));
+      item.put("blank", Boolean.TRUE.equals(raw.get("blank")));
+      flattenNativeSummary(item, raw);
+      items.add(item);
+    }
+    items.sort(Comparator.comparingLong((Map<String, Object> item) -> timestamp(item.get("updatedAt"))).reversed());
+    return Map.of("items", items.stream().limit(20).toList());
+  }
+
+  @SuppressWarnings("unchecked")
+  private void flattenNativeSummary(Map<String, Object> item, Map<String, Object> raw) {
+    Object projections = raw.get("projections");
+    Map<String, Object> values = Map.of();
+    if (projections instanceof Map<?, ?> projectionMap && projectionMap.get("values") instanceof Map<?, ?> valueMap) {
+      values = mapper.convertValue(valueMap, new TypeReference<Map<String, Object>>() {});
+    }
+    String nativeTitle = String.valueOf(values.getOrDefault("title", "")).trim();
+    if (!nativeTitle.isBlank() && !"null".equalsIgnoreCase(nativeTitle)) item.put("title", nativeTitle);
+    Object outline = values.get("turnOutline");
+    if (outline instanceof List<?> turns && !turns.isEmpty()) {
+      Object last = turns.get(turns.size() - 1);
+      if (last instanceof Map<?, ?> turn) {
+        String prompt = String.valueOf(turn.get("prompt")).trim();
+        String response = String.valueOf(turn.get("response")).trim();
+        if (!prompt.isBlank() && !"null".equalsIgnoreCase(prompt)) item.put("latestPrompt", shorten(prompt, 240));
+        if (!response.isBlank() && !"null".equalsIgnoreCase(response)) item.put("latestSummary", shorten(response, 240));
+      }
+    }
+    Object stats = values.get("sessionStats");
+    if (stats instanceof Map<?, ?> statsMap) item.put("turns", statsMap.get("turns") == null ? 0 : statsMap.get("turns"));
+    Object modelSelection = values.get("modelSelection");
+    if (modelSelection instanceof Map<?, ?> selection && selection.get("lastUsed") instanceof Map<?, ?> lastUsed) {
+      Object model = lastUsed.get("model");
+      if (model != null && !String.valueOf(model).isBlank()) item.put("model", model);
+    }
+  }
+
+  private long timestamp(Object value) {
+    if (value instanceof Number number) return number.longValue();
+    try { return Instant.parse(String.valueOf(value)).toEpochMilli(); }
+    catch (Exception ignored) { return 0; }
+  }
+
+  private boolean matchesProject(Map<String, Object> raw, String cwd, String projectPath, String workspaceId) {
+    if (!workspaceId.isBlank()) {
+      for (String key : List.of("workspaceId", "workspace", "workspaceIds", "workspaces")) {
+        Object value = raw.get(key);
+        if (containsValue(value, workspaceId)) return true;
+      }
+      Object projections = raw.get("projections");
+      if (containsValue(projections, workspaceId)) return true;
+    }
+    if (projectPath.isBlank() || cwd.isBlank()) return false;
+    return cwd.equals(projectPath) || cwd.startsWith(projectPath + "/");
+  }
+
+  private boolean containsValue(Object value, String expected) {
+    if (value == null) return false;
+    if (expected.equals(String.valueOf(value))) return true;
+    if (value instanceof Map<?, ?> map) return map.values().stream().anyMatch(item -> containsValue(item, expected));
+    if (value instanceof Iterable<?> values) {
+      for (Object item : values) if (containsValue(item, expected)) return true;
+    }
+    return false;
   }
 
   private String value(Map<String, Object> request, String key, String fallback) {
@@ -234,7 +354,7 @@ public class AgentController {
     var base = models.find(StpUtil.getLoginIdAsString(), configId)
       .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Model configuration not found."));
     if (selectedName.isBlank() || selectedName.equals(base.name())) return base;
-    return new ModelConfigRepository.ModelConfig(base.id(), base.ownerId(), selectedName, base.endpoint(), base.encryptedApiKey(), base.defaultModel(), base.updatedAt());
+    return new ModelConfigRepository.ModelConfig(base.id(), base.ownerId(), base.name(), selectedName, base.endpoint(), base.encryptedApiKey(), base.defaultModel(), base.updatedAt());
   }
 
   private String modelKey(ModelConfigRepository.ModelConfig model) {
@@ -250,6 +370,45 @@ public class AgentController {
   private void saveSession(Map<String, Object> session) {
     try { redis.opsForHash().put(SESSION_HASH, String.valueOf(session.get("id")), mapper.writeValueAsString(session)); }
     catch (Exception error) { throw new IllegalStateException("会话保存失败", error); }
+  }
+
+  private void requireProjectRole(Map<String,Object> session, boolean readOnly) {
+    String projectId = String.valueOf(session.getOrDefault("projectId", "")).trim();
+    if (projectId.isBlank()) return;
+    Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
+    if (raw == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "项目不存在或无权访问");
+    Map<String,Object> project = parse(raw);
+    String userId = StpUtil.getLoginIdAsString();
+    Object membersRaw = project.get("members");
+    if (!(membersRaw instanceof java.util.Collection<?> members)) { if (userId.equals(String.valueOf(project.getOrDefault("ownerId", ""))) || "demo-user".equals(userId)) return; throw new ResponseStatusException(HttpStatus.FORBIDDEN, "你不是该项目成员"); }
+    for (Object entry : members) if (entry instanceof Map<?,?> member && userId.equals(String.valueOf(member.get("userId")))) {
+      Object roleRaw = member.containsKey("role") ? member.get("role") : "viewer"; String role = String.valueOf(roleRaw);
+      if (readOnly || "admin".equals(role) || "developer".equals(role)) return;
+    }
+    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "当前项目角色无权执行此操作");
+  }
+
+  private Map<String,Object> parse(Object value) { try { return mapper.readValue(String.valueOf(value), new TypeReference<Map<String,Object>>() {}); } catch (Exception ex) { return Map.of(); } }
+
+  private void requireProjectMember(String projectId) {
+    Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
+    if (raw == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "项目不存在或无权访问");
+    Map<String,Object> project = parse(raw);
+    String userId = StpUtil.getLoginIdAsString();
+    if (userId.equals(String.valueOf(project.getOrDefault("ownerId", ""))) || "demo-user".equals(userId)) return;
+    Object membersRaw = project.get("members");
+    if (membersRaw instanceof java.util.Collection<?> members) {
+      for (Object entry : members) if (entry instanceof Map<?,?> member && userId.equals(String.valueOf(member.get("userId")))) return;
+    }
+    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "你不是该项目成员");
+  }
+
+  private Map<String, Object> loadOwnedSession(String id) {
+    Map<String,Object> session = loadSession(id);
+    if (session.isEmpty() || !StpUtil.getLoginIdAsString().equals(String.valueOf(session.getOrDefault("ownerId", "")))) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This session is unavailable.");
+    }
+    return session;
   }
 
   private Map<String, Object> loadSession(String id) {
@@ -269,8 +428,42 @@ public class AgentController {
     } catch (Exception ignored) { return ""; }
   }
 
+  private String projectWorkspaceId(String projectId) {
+    if (projectId == null || projectId.isBlank()) return "";
+    Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
+    if (raw == null) return "";
+    try {
+      Map<String, Object> project = mapper.readValue(String.valueOf(raw), new TypeReference<>() {});
+      return String.valueOf(project.getOrDefault("dshWorkspaceId", "")).trim();
+    } catch (Exception ignored) { return ""; }
+  }
+
   private void recordActivity(String type, String action, String target, String tone) {
-    redis.opsForStream().add(ACTIVITY_STREAM, Map.of("type", type, "action", action, "target", target, "tone", tone, "actor", "Lin", "createdAt", Instant.now().toString()));
+    recordActivity(type, action, target, tone, "");
+  }
+
+  private void recordActivity(String type, String action, String target, String tone, String projectId) {
+    Map<String, String> event = new LinkedHashMap<>();
+    event.put("type", type); event.put("action", action); event.put("target", target); event.put("tone", tone);
+    event.put("actorId", StpUtil.getLoginIdAsString()); event.put("actor", StpUtil.getLoginIdAsString());
+    event.put("projectId", projectId == null ? "" : projectId); event.put("createdAt", Instant.now().toString());
+    redis.opsForStream().add(ACTIVITY_STREAM, event);
+  }
+
+  private String projectContext(String projectId) {
+    if (projectId == null || projectId.isBlank()) return "";
+    List<String> lines = new ArrayList<>();
+    Map<Object,Object> presence = redis.opsForHash().entries("cw:workspace:presence:" + projectId);
+    Instant threshold = Instant.now().minusSeconds(45);
+    presence.forEach((user, seen) -> { try { Instant time = Instant.parse(String.valueOf(seen)); lines.add("- 成员「" + user + "」：" + (time.isAfter(threshold) ? "在线" : "离线") + "，最后活动 " + time); } catch (Exception ignored) {} });
+    redis.opsForHash().values(SESSION_HASH).stream().map(value -> {
+      try { return mapper.readValue(String.valueOf(value), new TypeReference<Map<String, Object>>() {}); }
+      catch (Exception ignored) { return Map.<String, Object>of(); }
+    }).filter(item -> projectId.equals(String.valueOf(item.getOrDefault("projectId", ""))))
+      .sorted(Comparator.comparing(item -> String.valueOf(item.getOrDefault("updatedAt", "")), Comparator.reverseOrder()))
+      .limit(5).forEach(item -> lines.add("- 会话「" + item.getOrDefault("title", "未命名") + "」：" + item.getOrDefault("state", "未知") + "，" + item.getOrDefault("detail", "无最新状态") + "（操作者：" + item.getOrDefault("latestActor", item.getOrDefault("ownerId", "未知")) + "）"));
+    if (lines.isEmpty()) return "";
+    return "当前 CodeWeave 项目协作上下文（仅使用已记录的信息）：\n" + String.join("\n", lines);
   }
 
   private void syncSessionState(String id, String payload) {
