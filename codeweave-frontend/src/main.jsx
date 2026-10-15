@@ -59,7 +59,7 @@ function ConfirmDialog({ dialog, onCancel, onConfirm }) {
     <section className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
       <div className="confirm-dialog-icon">!</div>
       <div className="confirm-dialog-copy"><h3 id="confirm-dialog-title">{dialog.title}</h3><p id="confirm-dialog-message">{dialog.message}</p></div>
-      <div className="confirm-dialog-actions"><button className="quiet" onClick={onCancel}>取消</button><button className="danger-button" onClick={onConfirm}>{dialog.confirmLabel || '确认删除'}</button></div>
+      <div className="confirm-dialog-actions"><button type="button" className="quiet" onClick={event => { event.preventDefault(); onCancel() }}>取消</button><button type="button" className="danger-button" onClick={event => { event.preventDefault(); onConfirm() }}>{dialog.confirmLabel || '确认删除'}</button></div>
     </section>
   </div>
 }
