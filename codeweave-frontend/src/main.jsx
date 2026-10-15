@@ -585,7 +585,13 @@ function DshProjectNeedsDirectory({ project, nav }) {
   return <div className="dsh-unavailable"><div><small>CODEWEAVE PROJECT</small><h2>{status === 'waiting-upload' ? '等待服务器接收快照' : status === 'error' ? '服务器工作区准备失败' : '服务器工作区准备中'}</h2><p>{project?.workspaceError || '项目目录由服务器统一准备，准备完成后团队成员可以进入同一个工作区。'}</p><button className="primary small" onClick={() => nav('projects')}>返回项目</button></div></div>
 }
 
-function Conflicts({ nav }) { return <div className="page"><div className="page-head"><div><small>COLLABORATION CONTROL</small><h1>冲突中心</h1><p>把协作中的不确定性集中到这里处理。</p></div><button className="quiet" onClick={() => nav('agent')}>返回工作台</button></div><section className="panel"><div className="empty-state"><strong>暂无协作冲突</strong><span>当多人同时修改同一项目或文件时，冲突会显示在这里。</span></div></section></div> }
+function Conflicts({ nav }) {
+ const [items,setItems]=useState([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[busy,setBusy]=useState('')
+ const load=()=>{setLoading(true);api.conflicts().then(r=>setItems(r?.items||[])).catch(e=>setError(e.message)).finally(()=>setLoading(false))}
+ useEffect(load,[])
+ const resolve=async item=>{if(!window.confirm(`请确认你已在本地编辑并保存“${item.file}”，然后标记为已解决？`))return;setBusy(item.file);try{await api.resolveConflict(item.projectId,item.file);load()}catch(e){setError(e.message)}finally{setBusy('')}}
+ return <div className="page"><div className="page-head"><div><small>COLLABORATION CONTROL</small><h1>冲突中心</h1><p>检测项目工作区中的 Git 未合并文件。请先手动编辑文件，再标记已解决。</p></div><button className="quiet" onClick={()=>nav('agent')}>返回工作台</button></div><section className="panel conflict-panel">{error&&<div className="notice error">{error}</div>}{loading?<div className="empty-state"><strong>正在扫描工作区…</strong></div>:items.length===0?<div className="empty-state"><strong>暂无协作冲突</strong><span>当前项目没有 Git 未合并文件。</span></div>:<div className="conflict-list">{items.map(item=><div className="conflict-row" key={`${item.projectId}:${item.file}`}><div><b>{item.file}</b><small>{item.projectName}</small></div><button className="primary small" disabled={busy===item.file} onClick={()=>resolve(item)}>{busy===item.file?'处理中…':'标记已解决'}</button></div>)}</div>}</section></div>
+}
 
 function FileDropzone({ file, onFileChange, accept, hint }) {
   const inputRef = useRef(null)

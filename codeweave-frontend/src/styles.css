@@ -243,3 +243,4 @@
 .member-current{max-height: min(320px, 40vh);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .member-current>small{position:sticky;top:0;z-index:1;margin:0;padding:8px 0;background:#0c1420}
 
+.conflict-list{display:grid;gap:10px}.conflict-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px;border:1px solid var(--line,#e5e7eb);border-radius:12px}.conflict-row small{display:block;color:var(--muted,#64748b);margin-top:5px}.notice.error{padding:12px;color:#b42318;background:#fff1f0;border-radius:8px;margin-bottom:14px}
