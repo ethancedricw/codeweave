@@ -4,7 +4,7 @@ Java Spring Boot control plane for the CodeWeave enterprise AI collaboration wor
 
 Stack: Java 17 locally (upgrade target Java 21), Spring Boot, MyBatis-Plus, Redis, Redis Stream, JWT and Sa-Token.
 
-Configuration is split into `application-local-win.yml`, `application-local.yml`, and `application-prod.yml`. Windows uses `local-win` by default; macOS/Linux can start with `-Dspring.profiles.active=local`.
+Configuration is split into `application-local-win.yml`, `application-local-mac.yml`, and `application-prod.yml`. Windows uses `local-win` by default; macOS uses `-Dspring.profiles.active=local-mac`.
 
 ## Run locally
 
