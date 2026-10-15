@@ -65,6 +65,7 @@ public class AgentController {
     String projectPath = request == null ? "" : String.valueOf(request.getOrDefault("serverPath", request.getOrDefault("projectPath", ""))).trim();
     String projectName = request == null ? "" : String.valueOf(request.getOrDefault("projectName", "")).trim();
     String projectId = request == null ? "" : String.valueOf(request.getOrDefault("projectId", "")).trim();
+    System.out.println("[CodeWeave] dsh-console request projectId=" + projectId + ", projectName=" + projectName);
     if (!projectId.isBlank()) requireProjectMember(projectId);
     List<String> providers = configured.stream().map(model -> projectId.isBlank()
       ? dsh.syncConsoleModel(model, modelKey(model))
@@ -81,7 +82,10 @@ public class AgentController {
         } catch (Exception ignored) { }
       }
     }
-    String workspaceId = existingWorkspaceId.isBlank() && !projectPath.isBlank() ? dsh.ensureWorkspace(projectPath, projectName) : existingWorkspaceId;
+    // Always resolve the workspace from the current project's server path. A stale
+    // persisted dshWorkspaceId can point to another project's DSH workspace.
+    String workspaceId = !projectPath.isBlank() ? dsh.ensureWorkspace(projectPath, projectName) : existingWorkspaceId;
+    System.out.println("[CodeWeave] dsh-console resolved projectId=" + projectId + ", projectPath=" + projectPath + ", existingWorkspaceId=" + existingWorkspaceId + ", workspaceId=" + workspaceId);
     if (!projectId.isBlank() && !workspaceId.isBlank()) {
       Object raw = redis.opsForHash().get("cw:workspace:projects", projectId);
       if (raw != null) {

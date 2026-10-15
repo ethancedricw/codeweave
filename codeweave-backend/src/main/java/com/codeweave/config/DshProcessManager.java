@@ -25,7 +25,9 @@ import java.util.regex.Pattern;
 @Component
 public class DshProcessManager {
   private static final Logger log = LoggerFactory.getLogger(DshProcessManager.class);
-  private static final Pattern READY_URL = Pattern.compile("dsh web:\\s+\\S+\\?token=([^\\s]+)");
+  // DSH has changed the human-readable prefix across releases; the token URL
+  // is the stable part of the startup line.
+  private static final Pattern READY_URL = Pattern.compile("(?:https?://)?[^\\s]*[?&]token=([^\\s&\\\"']+)");
 
   private final DshProperties properties;
   private final CountDownLatch ready = new CountDownLatch(1);
@@ -85,7 +87,7 @@ public class DshProcessManager {
         if (matcher.find()) {
           properties.setAuthToken(URLDecoder.decode(matcher.group(1), StandardCharsets.UTF_8));
           ready.countDown();
-          log.info("DSH is ready at {}", properties.getBaseUrl());
+          log.info("DSH is ready at {} and authentication token was captured", properties.getBaseUrl());
         } else if (log.isDebugEnabled()) {
           log.debug("DSH: {}", line);
         }

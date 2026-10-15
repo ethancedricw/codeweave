@@ -16,7 +16,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { RemoteHostFacts } from '@deepseek-ai/dsh-api-remotes/client'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
-  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceSnapshot,
+  IWorkspaces, SessionActivity, WorkspaceArchiveError, WorkspaceSnapshot, WorkspaceId,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
@@ -112,6 +112,71 @@ export function apply(ctx: Context): void {
   const uiWorkspace = new UiWorkspaceService(
     ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify,
   )
+  // CodeWeave embeds DSH and passes the project workspace in the URL. Select
+  // that workspace after the registry has hydrated instead of restoring the
+  // last local DSH selection (which would show another project's sessions).
+  const requestedWorkspaceId = typeof window === 'undefined'
+    ? undefined
+    : new URLSearchParams(window.location.search).get('codeweaveWorkspaceId') || undefined
+  if (requestedWorkspaceId !== undefined) {
+    console.info('[DSH] CodeWeave requested workspace:', requestedWorkspaceId)
+    let selectedRequestedWorkspace = false
+    const selectRequestedWorkspace = (): void => {
+      if (selectedRequestedWorkspace) return
+      const snapshot = workspaces.list.getSnapshot()
+      console.info('[DSH] CodeWeave workspace selection attempt:', requestedWorkspaceId, snapshot.phase, snapshot.items.map(item => item.workspaceId))
+      if (snapshot.phase !== 'ready') return
+      if (!snapshot.items.some(item => item.workspaceId === requestedWorkspaceId)) {
+        console.warn('[DSH] CodeWeave workspace was not found:', requestedWorkspaceId)
+        return
+      }
+      selectedRequestedWorkspace = true
+      console.info('[DSH] Opening CodeWeave workspace:', requestedWorkspaceId)
+      void uiWorkspace.openWorkspace(requestedWorkspaceId as WorkspaceId).catch(error => {
+        console.warn('[DSH] Failed to open CodeWeave workspace:', error)
+      })
+    }
+    const unsubscribe = workspaces.list.subscribe(selectRequestedWorkspace)
+    selectRequestedWorkspace()
+    // The shell restores its last session during startup. Re-apply the
+    // embedding request after that restoration has settled so it cannot win
+    // over the CodeWeave project selection.
+    const delayed = window.setTimeout(() => {
+      selectedRequestedWorkspace = false
+      selectRequestedWorkspace()
+    }, 1500)
+    ctx.effect(() => {
+      return () => {
+        unsubscribe()
+        window.clearTimeout(delayed)
+      }
+    }, 'ui-workspace: CodeWeave workspace selection')
+  }
+  // 监听来自 CodeWeave 前端的 workspace 切换请求
+  if (typeof window !== 'undefined' && window.parent !== window) {
+    const handleCodeWeaveSwitch = (event: MessageEvent): void => {
+      if (event.data?.type !== 'codeweave:switch-workspace') return
+      const targetWorkspaceId = String(event.data.workspaceId || '')
+      if (!targetWorkspaceId) return
+      console.info('[DSH] CodeWeave 请求切换到 workspace:', targetWorkspaceId)
+      const snapshot = workspaces.list.getSnapshot()
+      if (snapshot.phase !== 'ready') {
+        console.warn('[DSH] Workspace 列表未就绪，无法切换')
+        return
+      }
+      if (!snapshot.items.some(item => item.workspaceId === targetWorkspaceId)) {
+        console.warn('[DSH] 目标 workspace 不存在:', targetWorkspaceId)
+        return
+      }
+      void uiWorkspace.openWorkspace(targetWorkspaceId as WorkspaceId).catch(error => {
+        console.warn('[DSH] 切换 workspace 失败:', error)
+      })
+    }
+    window.addEventListener('message', handleCodeWeaveSwitch)
+    ctx.effect(() => {
+      return () => window.removeEventListener('message', handleCodeWeaveSwitch)
+    }, 'ui-workspace: CodeWeave workspace switch listener')
+  }
   ctx.slots.provideRoot({ hooks: { workspaces: workspaces.list } })
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
 
@@ -311,3 +376,4 @@ function activeSessionRefusal(reason: unknown): readonly SessionActivity[] | und
   const { rpcError } = reason as WorkspaceArchiveError
   return rpcError.code === 'workspace/session-active' ? rpcError.details.activity : undefined
 }
+

@@ -214,6 +214,9 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     if (navigation.aborted) return
     this.replaceMain(sessionId, navigation, 'reveal', beforeOpen)
+    if (typeof window !== 'undefined' && window.parent !== window) {
+      window.parent.postMessage({ type: 'codeweave:dsh-workspace-changed', workspaceId }, '*')
+    }
   }
 
   async forkSession(sessionId: SessionId): Promise<void> {

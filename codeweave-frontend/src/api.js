@@ -77,7 +77,7 @@ export const api = {
   },
   agentEvents: (sessionId) => request(`/agent/sessions/${sessionId}/events`),
   projectAgentSessions: projectId => request(`/agent/project-sessions?projectId=${encodeURIComponent(projectId)}`),
-  dshConsole: (project = {}) => request('/agent/dsh-console', { method: 'POST', body: JSON.stringify({ projectId: project.projectId || project.id || '', projectName: project.name || '' }) }),
+  dshConsole: (project = {}) => request('/agent/dsh-console', { method: 'POST', body: JSON.stringify({ projectId: project.projectId || project.id || '', projectName: project.projectName || project.name || '' }) }),
   models: () => request('/settings/models'),
   modelCatalog: () => request('/settings/models/catalog'),
   createModel: (payload) => request('/settings/models', { method: 'POST', body: JSON.stringify(payload) }),

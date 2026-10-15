@@ -216,8 +216,12 @@ public class DeepSeekHarnessClient {
     Object workspaceId = row.get("workspaceId");
     if (!(workspaceId instanceof String id) || id.isBlank()) throw new DshException("DSH returned no workspace ID.");
     if (title != null && !title.isBlank()) {
-      try { rpc("workspace/rename", Map.of("request", Map.of("workspaceId", id, "title", title.trim()))); }
-      catch (DshException ignored) { }
+      try {
+        rpc("workspace/rename", Map.of("request", Map.of("workspaceId", id, "title", title.trim())));
+        System.out.println("[CodeWeave] DSH workspace renamed workspaceId=" + id + ", title=" + title.trim());
+      } catch (DshException error) {
+        System.out.println("[CodeWeave] DSH workspace rename failed workspaceId=" + id + ", title=" + title.trim() + ", error=" + error.getMessage());
+      }
     }
     return id;
   }

@@ -516,12 +516,55 @@ function CollaborationSession({ item, presence }) {
   </div>
 }
 
-function DshConsole({ url, project, nav, onToast }) {
+function DshConsole({ url, project, nav, onToast, onWorkspaceChange }) {
   const [collabCollapsed, setCollabCollapsed] = useState(false)
   const [presence, setPresence] = useState([])
   const [collabSessions, setCollabSessions] = useState([])
   const [collabError, setCollabError] = useState('')
   const [collabLoading, setCollabLoading] = useState(true)
+  const iframeRef = useRef(null)
+  const currentWorkspaceId = useRef('')
+  useEffect(() => {
+    const receive = event => {
+      if (event.data?.type !== 'codeweave:dsh-workspace-changed') return
+      onWorkspaceChange?.(String(event.data.workspaceId || ''))
+    }
+    window.addEventListener('message', receive)
+    return () => window.removeEventListener('message', receive)
+  }, [onWorkspaceChange])
+  // 监听项目变化，通知 DSH iframe 切换 workspace
+  useEffect(() => {
+    const workspaceId = project?.dshWorkspaceId || ''
+    if (!workspaceId || workspaceId === currentWorkspaceId.current) return
+    currentWorkspaceId.current = workspaceId
+    const frame = iframeRef.current
+    if (!frame || !frame.contentWindow) return
+    // 等待 iframe 加载完成后再发送消息，支持重试
+    let attempts = 0
+    const maxAttempts = 10
+    const sendSwitchMessage = () => {
+      attempts++
+      try {
+        frame.contentWindow.postMessage({ type: 'codeweave:switch-workspace', workspaceId }, '*')
+        console.info(`[CodeWeave] 通知 DSH 切换到 workspace: ${workspaceId} (尝试 ${attempts}/${maxAttempts})`)
+      } catch (error) {
+        console.warn('[CodeWeave] 无法向 DSH 发送切换消息:', error)
+      }
+    }
+    // 首次尝试延迟 2 秒，然后每秒重试一次，最多 10 次
+    const timer = setTimeout(sendSwitchMessage, 2000)
+    const retryTimer = setInterval(() => {
+      if (attempts >= maxAttempts) {
+        clearInterval(retryTimer)
+        return
+      }
+      sendSwitchMessage()
+    }, 1000)
+    return () => {
+      clearTimeout(timer)
+      clearInterval(retryTimer)
+    }
+  }, [project?.dshWorkspaceId])
   const previousOnline = useRef(new Set())
   useEffect(() => {
     if (!project?.id) return
@@ -568,7 +611,7 @@ function DshConsole({ url, project, nav, onToast }) {
     }
   })()
   const projectLabel = project?.name || ''
-  return <div className="dsh-console-shell"><header className="dsh-console-head"><div><b>Agent 工作台</b><span>{projectLabel}</span></div><div><a className="quiet small" href={frameUrl} target="_blank" rel="noreferrer">在新窗口打开 ↗</a></div></header><div className="dsh-console-body"><iframe className="dsh-console-frame" src={frameUrl} title="CodeWeave Agent 工作台" allow="clipboard-read; clipboard-write" /><aside className={`collab-panel${collabCollapsed ? " collapsed" : ""}`}><div className="collab-toolbar"><button className="collab-toggle" aria-label={collabCollapsed ? '展开项目协作' : '折叠项目协作'} title={collabCollapsed ? '展开项目协作' : '折叠项目协作'} aria-expanded={!collabCollapsed} onClick={() => setCollabCollapsed(value => !value)}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={collabCollapsed ? 'M14 6l-6 6 6 6' : 'M10 6l6 6-6 6'} /></svg></button></div><div className="collab-panel-head"><b>项目协作</b><small>{presence.filter(item => item.online).length} 人在线</small></div><div className="collab-members">{presence.map(item => <div className="collab-member" key={item.userId}><i className={item.online ? 'online' : ''} /><span title={item.displayName || '项目成员'}>{item.displayName || '项目成员'}</span><small>{item.online ? '在线' : '离线'}</small></div>)}</div><div className="collab-panel-head"><b>最近会话</b><small>{collabSessions.length ? `${collabSessions.length} 条` : ''}</small></div><div className="collab-sessions">{collabError && <p className="collab-error" role="status">{collabError}</p>}{collabSessions.length ? collabSessions.map(item => <CollaborationSession item={item} presence={presence} key={item.id} />) : <small className="rail-muted">{collabLoading ? '正在加载会话…' : collabError ? '请稍后查看' : '暂无项目会话，发送第一条消息后会显示在这里'}</small>}</div></aside></div></div>
+  return <div className="dsh-console-shell"><header className="dsh-console-head"><div><b>Agent 工作台</b><span>{projectLabel}</span></div><div><a className="quiet small" href={frameUrl} target="_blank" rel="noreferrer">在新窗口打开 ↗</a></div></header><div className="dsh-console-body"><iframe ref={iframeRef} className="dsh-console-frame" src={frameUrl} title="CodeWeave Agent 工作台" allow="clipboard-read; clipboard-write" /><aside className={`collab-panel${collabCollapsed ? " collapsed" : ""}`}><div className="collab-toolbar"><button className="collab-toggle" aria-label={collabCollapsed ? '展开项目协作' : '折叠项目协作'} title={collabCollapsed ? '展开项目协作' : '折叠项目协作'} aria-expanded={!collabCollapsed} onClick={() => setCollabCollapsed(value => !value)}><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={collabCollapsed ? 'M14 6l-6 6 6 6' : 'M10 6l6 6-6 6'} /></svg></button></div><div className="collab-panel-head"><b>项目协作</b><small>{presence.filter(item => item.online).length} 人在线</small></div><div className="collab-members">{presence.map(item => <div className="collab-member" key={item.userId}><i className={item.online ? 'online' : ''} /><span title={item.displayName || '项目成员'}>{item.displayName || '项目成员'}</span><small>{item.online ? '在线' : '离线'}</small></div>)}</div><div className="collab-panel-head"><b>最近会话</b><small>{collabSessions.length ? `${collabSessions.length} 条` : ''}</small></div><div className="collab-sessions">{collabError && <p className="collab-error" role="status">{collabError}</p>}{collabSessions.length ? collabSessions.map(item => <CollaborationSession item={item} presence={presence} key={item.id} />) : <small className="rail-muted">{collabLoading ? '正在加载会话…' : collabError ? '请稍后查看' : '暂无项目会话，发送第一条消息后会显示在这里'}</small>}</div></aside></div></div>
 }
 
 function DshUnavailable({ nav, message, onRetry }) {
@@ -705,6 +748,7 @@ function Projects({ nav, projects = [], onProjectsChange, onOpenProject, onToast
       onProjectsChange?.(current => editingId ? current.map(item => item.id === editingId ? result : item) : [result, ...current])
       onToast?.(editingId ? '项目已更新' : '项目已创建')
       setFormOpen(false)
+      if (!editingId) onOpenProject?.(result)
     } catch {
       const local = { id: editingId || `local-project-${Date.now()}`, ...payload, source: type === 'git' ? 'Git 仓库' : '快照项目', workspaceReady: false, workspaceStatus: 'preparing', status: 'preparing', activeTasks: 0, ragflowConfigured: ragflowEnabled && Boolean(ragflowDatasetIds.length) }
       onProjectsChange?.(current => editingId ? current.map(item => item.id === editingId ? local : item) : [local, ...current])
@@ -835,7 +879,8 @@ export default function App() {
     let disposed = false
     if (!selectedProject?.workspaceReady) { setDshConsoleUrl(''); setDshConsoleError(''); return undefined }
     setDshConsoleError('')
-    api.dshConsole({ projectId: selectedProject.id, name: selectedProject.name }).then(result => { if (!disposed) setDshConsoleUrl(result?.url || '') }).catch(error => { if (!disposed) { setDshConsoleUrl(''); setDshConsoleError(error.status === 409 ? '请先在设置中配置至少一个模型，配置完成后再进入 Agent 工作台。' : (error.message || '')) } })
+    console.info(`[CodeWeave] opening Agent workspace projectId=${selectedProject.id} projectName=${selectedProject.name || ''} workspaceId=${selectedProject.dshWorkspaceId || ''}`)
+    api.dshConsole({ projectId: selectedProject.id, projectName: selectedProject.name }).then(result => { console.info(`[CodeWeave] Agent workspace response projectId=${selectedProject.id} workspaceId=${result?.workspaceId || ''} url=${result?.url || ''}`); if (!disposed) setDshConsoleUrl(result?.url || '') }).catch(error => { console.error(`[CodeWeave] Agent workspace failed projectId=${selectedProject.id} status=${error.status || ''} error=${error.message || error}`); if (!disposed) { setDshConsoleUrl(''); setDshConsoleError(error.status === 409 ? '请先在设置中配置至少一个模型，配置完成后再进入 Agent 工作台。' : (error.message || '')) } })
     return () => { disposed = true }
   }, [logged, selectedProject?.id, selectedProject?.name, selectedProject?.workspaceReady, dshRetry])
   const uploadAvatar = async file => {
@@ -851,9 +896,9 @@ export default function App() {
   })
   if (!logged) return <Login onLogin={login} />
   let page = <Overview profile={profile} metrics={summary.metrics} collaboration={summary.collaboration} items={items} attention={summary.attention} activity={summary.activity} nav={nav} open={s => { setSession(s); localStorage.setItem('codeweave-session-id', s.id); nav('agent') }} />
-  if (active === 'agent') page = !selectedProject ? <DshNoProject nav={nav} hasProjects={Boolean(summary.projects?.length)} /> : !selectedProject.workspaceReady ? <DshProjectNeedsDirectory project={selectedProject} nav={nav} /> : dshConsoleUrl ? <DshConsole url={dshConsoleUrl} project={selectedProject} nav={nav} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} /> : <DshUnavailable nav={nav} message={dshConsoleError} onRetry={() => setDshRetry(value => value + 1)} />
+  if (active === 'agent') page = !selectedProject ? <DshNoProject nav={nav} hasProjects={Boolean(summary.projects?.length)} /> : !selectedProject.workspaceReady ? <DshProjectNeedsDirectory project={selectedProject} nav={nav} /> : dshConsoleUrl ? <DshConsole url={dshConsoleUrl} project={selectedProject} nav={nav} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} onWorkspaceChange={workspaceId => { const next = (summary.projects || []).find(item => item.dshWorkspaceId === workspaceId); if (next && next.id !== selectedProject.id) { setSelectedProject(next); localStorage.setItem('codeweave-selected-project', next.id); /* 不要清空 dshConsoleUrl，避免 iframe 重新加载 */ } }} /> : <DshUnavailable nav={nav} message={dshConsoleError} onRetry={() => setDshRetry(value => value + 1)} />
   if (active === 'conflicts') page = <Conflicts nav={nav} />
-  if (active === 'projects') page = <Projects projects={summary.projects} nav={nav} onProjectsChange={updateProjects} onOpenProject={project => { setSelectedProject(project); localStorage.setItem('codeweave-selected-project', project.id); nav('agent') }} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />
+  if (active === 'projects') page = <Projects projects={summary.projects} nav={nav} onProjectsChange={updateProjects} onOpenProject={project => { setSelectedProject(project); localStorage.setItem('codeweave-selected-project', project.id); setDshConsoleUrl(''); setDshConsoleError(''); nav('agent') }} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />
   if (active === 'audit') page = <Audit />
   return <div className="shell"><Header collapsed={sidebarCollapsed} onToggle={toggleSidebar} modelName={defaultModelName} project={selectedProject} profile={profile} onAvatarUpload={uploadAvatar} onLogout={logout} /><Sidebar active={active} setActive={setActive} logout={logout} openSettings={() => setSettingsOpen(true)} access={access} collapsed={sidebarCollapsed} /><main className={`main${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>{page}</main>{toast && <div className="toast">{toast}</div>}{settingsOpen && <SettingsModal access={access} onClose={() => setSettingsOpen(false)} onDefaultModelChange={setDefaultModelName} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />}<footer className="statusbar"><span>⌁ {selectedProject?.name || '未选择项目'}</span><span>Rust heartbeat 4ms</span><span>Tokens 38.4k / 500k</span><span className="online">◉ WS Connected · 3 active</span></footer></div>
 }
@@ -863,5 +908,6 @@ const rootKey = Symbol.for('codeweave.reactRoot')
 // Keep the root on its container so re-executing this entry during HMR reuses it.
 const root = container[rootKey] ?? (container[rootKey] = createRoot(container))
 root.render(<App />)
+
 
 

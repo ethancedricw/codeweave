@@ -268,8 +268,16 @@ public class WorkspaceController {
         token = gitToken(existing);
       }
     }
-    provisioning.testGit(repoUrl, branch, username, token);
-    return Map.of("status", "ready", "message", "Git 仓库连接成功，可以拉取");
+    try {
+      provisioning.testGit(repoUrl, branch, username, token);
+      return Map.of("status", "ready", "message", "Git 仓库连接成功，可以拉取");
+    } catch (IllegalArgumentException error) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, error.getMessage());
+    } catch (IllegalStateException error) {
+      String message = error.getMessage();
+      if (message == null || message.isBlank()) message = "Git 仓库连接失败，请检查地址、分支和访问凭据";
+      throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Git 连接失败：" + message);
+    }
   }
 
   @PostMapping("/tasks")
