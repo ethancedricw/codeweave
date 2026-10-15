@@ -6,6 +6,20 @@
 
 CodeWeave is an open-source workspace for team-oriented AI software development. It connects AI agents with real project workspaces, task execution, approvals, collaboration, audit trails, and knowledge bases—so AI can participate in the engineering workflow instead of only answering questions in a chat window.
 
+## Product screenshots
+
+| Login | Overview |
+|---|---|
+| ![CodeWeave login](docs/screenshots/login.png) | ![CodeWeave overview](docs/screenshots/overview.png) |
+
+| Agent workbench | Projects and workspaces |
+|---|---|
+| ![Agent workbench](docs/screenshots/agent-workbench.png) | ![Projects and workspaces](docs/screenshots/projects.png) |
+
+| Workspace settings |
+|---|
+| ![Workspace settings](docs/screenshots/settings.png) |
+
 ## Highlights
 
 - AI agent sessions with project and workspace context
@@ -38,17 +52,42 @@ codeweave/
 
 ## Quick start
 
-### Start backend services
+Start the services in this order: infrastructure, DeepSeek Harness, backend, then frontend.
+
+### 1. Start infrastructure services
 
 ```powershell
 cd codeweave-backend
 docker compose up -d
+```
+
+This starts PostgreSQL, Redis, and MinIO.
+
+### 2. Install and start DeepSeek Harness
+
+The customized Harness source is included in this repository. It requires Node.js 22.19+ and pnpm 11.7+.
+
+```powershell
+cd ..\deepseek-harness
+corepack enable
+corepack prepare pnpm@11.7.0 --activate
+pnpm install
+pnpm run build
+pnpm dsh web --no-open
+```
+
+Keep this terminal running. The default Harness address is `http://127.0.0.1:3080`.
+
+### 3. Start the backend
+
+```powershell
+cd ..\codeweave-backend
 mvn spring-boot:run
 ```
 
 The backend runs at `http://localhost:8080` by default.
 
-### Start frontend
+### 4. Start the frontend
 
 ```powershell
 cd codeweave-frontend
@@ -57,10 +96,6 @@ npm run dev
 ```
 
 The frontend runs at `http://localhost:5173` and proxies `/api` to the backend.
-
-### Start DeepSeek Harness
-
-`deepseek-harness` is included as a customized source tree. Follow its local documentation and package scripts when starting the agent runtime. CodeWeave expects the Harness service at the address configured in the backend application settings.
 
 ## Configuration
 

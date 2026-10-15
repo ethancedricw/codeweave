@@ -669,7 +669,7 @@ function formatFileSize(size = 0) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
-function Projects({ nav, projects = [], onProjectsChange, onOpenProject, onToast }) {
+function Projects({ nav, projects = [], onProjectsChange, onOpenProject, onToast, access }) {
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [name, setName] = useState('')
@@ -756,7 +756,19 @@ function Projects({ nav, projects = [], onProjectsChange, onOpenProject, onToast
       setFormOpen(false)
     }
   }
-  const remove = async project => { setProjectToDelete(project); setDeleteConfirmStep(1) }
+  const remove = async project => {
+    // 检查权限：只有项目创建人或管理员可以删除
+    console.log('[删除检查] project.ownerId:', project.ownerId, 'access:', access)
+    const isOwner = project.ownerId === (access?.userId || access?.id || 'demo-user')
+    const isAdmin = access?.role === 'admin' || access?.permissions?.includes('*') || access?.permissions?.includes('全部权限')
+    console.log('[删除检查] isOwner:', isOwner, 'isAdmin:', isAdmin)
+    if (!isOwner && !isAdmin) {
+      onToast?.('只有项目创建人才能删除项目')
+      return
+    }
+    setProjectToDelete(project)
+    setDeleteConfirmStep(1)
+  }
   const confirmProjectDelete = async () => {
     if (!projectToDelete) return
     try { await api.deleteProject(projectToDelete.id); onProjectsChange?.(current => current.filter(item => item.id !== projectToDelete.id)); onToast?.('项目已删除') }
@@ -769,7 +781,7 @@ function Projects({ nav, projects = [], onProjectsChange, onOpenProject, onToast
     catch (error) { onProjectsChange?.(current => current.map(item => item.id === project.id ? { ...item, workspaceStatus: 'error', workspaceError: error.message || '服务器工作区准备失败' } : item)); onToast?.(error.message || '服务器工作区准备失败') }
     finally { setSyncingId(null) }
   }
-  return <div className="page">{projectToDelete && <ConfirmDialog dialog={{ title: deleteConfirmStep === 1 ? '删除项目' : '确认永久删除', message: deleteConfirmStep === 1 ? '确定删除项目“' + projectToDelete.name + '”吗？' : '项目“' + projectToDelete.name + '”及其成员关系将被删除，此操作无法撤销。确定继续吗？', confirmLabel: deleteConfirmStep === 1 ? '继续删除' : '确认删除' }} onCancel={() => { setProjectToDelete(null); setDeleteConfirmStep(0) }} onConfirm={() => deleteConfirmStep === 1 ? setDeleteConfirmStep(2) : confirmProjectDelete} />}
+  return <div className="page">{projectToDelete && <ConfirmDialog dialog={{ title: deleteConfirmStep === 1 ? '删除项目' : '确认永久删除', message: deleteConfirmStep === 1 ? '确定删除项目”' + projectToDelete.name + '”吗？' : '项目”' + projectToDelete.name + '”及其成员关系将被删除，此操作无法撤销。确定继续吗？', confirmLabel: deleteConfirmStep === 1 ? '继续删除' : '确认删除' }} onCancel={() => { setProjectToDelete(null); setDeleteConfirmStep(0) }} onConfirm={() => { if (deleteConfirmStep === 1) { setDeleteConfirmStep(2) } else { confirmProjectDelete() } }} />}
     <div className="page-head"><div><small>YOUR WORKSPACES</small><h1>项目与工作区</h1><p>项目目录由服务器统一管理，所有有权限的成员进入同一个工作区。</p></div><button className="primary small" onClick={() => openForm()}>＋ 新建项目</button></div>
     <div className="workspace-guide"><div><b>一个项目，多个协作会话</b><span>Git 仓库在服务器 clone，快照在服务器解压，Agent 使用共享目录。</span></div><div className="workspace-types"><span><i className="type-dot git" />Git 仓库</span><span><i className="type-dot snapshot" />快照</span><span><i className="type-dot local" />服务器目录</span></div></div>
     <div className="project-grid">{projects.length ? projects.map(project => <article className="project" key={project.id}><div className="project-top"><Badge tone={project.workspaceReady ? 'mint' : project.workspaceStatus === 'error' ? 'danger' : 'amber'}>{project.workspaceReady ? '服务器可用' : project.workspaceStatus === 'error' ? '准备失败' : project.workspaceStatus === 'waiting-upload' ? '等待快照' : '准备中'}</Badge><button className="project-more" onClick={() => openForm(project)}>编辑</button></div><h2>{project.name}</h2><p className="project-source">{project.source || (project.type === 'git' ? 'Git 仓库' : project.type === 'snapshot' ? '快照项目' : '服务器目录')}</p><p className="project-location">{project.repoUrl || '服务器共享工作区'}</p>{project.ragflowConfigured && <span className="knowledge-bound">⌁ 已绑定 RAGFlow · {(project.ragflowDatasetNames || []).join('、') || `${(project.ragflowDatasetIds || []).length} 个知识库`}</span>}{project.workspaceError && <span className="field-help">{project.workspaceError}</span>}<footer><span>{project.activeTasks || 0} 个活跃任务</span><div>{(project.type === 'git' || !project.workspaceReady) && <button disabled={syncingId === project.id} onClick={() => sync(project)}>{syncingId === project.id ? '准备中…' : project.type === 'git' && project.workspaceReady ? '同步服务器' : '重新准备'}</button>}<button className="primary small project-member-button" onClick={() => openMembers(project)}>邀请成员</button><button onClick={() => onOpenProject?.(project)}>进入工作区 →</button><button className="danger-link" onClick={() => remove(project)}>删除</button></div></footer></article>) : <div className="empty-state project-empty"><strong>还没有项目</strong><span>先添加一个 Git 仓库或快照，Agent 会在服务器共享目录里执行任务。</span><button className="primary small" onClick={() => openForm()}>＋ 创建第一个项目</button></div>}<button className="project new" onClick={() => openForm()}><strong>＋</strong><b>新建项目</b><small>Git、快照或服务器目录</small></button></div>
@@ -898,7 +910,7 @@ export default function App() {
   let page = <Overview profile={profile} metrics={summary.metrics} collaboration={summary.collaboration} items={items} attention={summary.attention} activity={summary.activity} nav={nav} open={s => { setSession(s); localStorage.setItem('codeweave-session-id', s.id); nav('agent') }} />
   if (active === 'agent') page = !selectedProject ? <DshNoProject nav={nav} hasProjects={Boolean(summary.projects?.length)} /> : !selectedProject.workspaceReady ? <DshProjectNeedsDirectory project={selectedProject} nav={nav} /> : dshConsoleUrl ? <DshConsole url={dshConsoleUrl} project={selectedProject} nav={nav} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} onWorkspaceChange={workspaceId => { const next = (summary.projects || []).find(item => item.dshWorkspaceId === workspaceId); if (next && next.id !== selectedProject.id) { setSelectedProject(next); localStorage.setItem('codeweave-selected-project', next.id); /* 不要清空 dshConsoleUrl，避免 iframe 重新加载 */ } }} /> : <DshUnavailable nav={nav} message={dshConsoleError} onRetry={() => setDshRetry(value => value + 1)} />
   if (active === 'conflicts') page = <Conflicts nav={nav} />
-  if (active === 'projects') page = <Projects projects={summary.projects} nav={nav} onProjectsChange={updateProjects} onOpenProject={project => { setSelectedProject(project); localStorage.setItem('codeweave-selected-project', project.id); setDshConsoleUrl(''); setDshConsoleError(''); nav('agent') }} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />
+  if (active === 'projects') page = <Projects projects={summary.projects} nav={nav} onProjectsChange={updateProjects} onOpenProject={project => { setSelectedProject(project); localStorage.setItem('codeweave-selected-project', project.id); setDshConsoleUrl(''); setDshConsoleError(''); nav('agent') }} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} access={access} />
   if (active === 'audit') page = <Audit />
   return <div className="shell"><Header collapsed={sidebarCollapsed} onToggle={toggleSidebar} modelName={defaultModelName} project={selectedProject} profile={profile} onAvatarUpload={uploadAvatar} onLogout={logout} /><Sidebar active={active} setActive={setActive} logout={logout} openSettings={() => setSettingsOpen(true)} access={access} collapsed={sidebarCollapsed} /><main className={`main${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>{page}</main>{toast && <div className="toast">{toast}</div>}{settingsOpen && <SettingsModal access={access} onClose={() => setSettingsOpen(false)} onDefaultModelChange={setDefaultModelName} onToast={message => { setToast(message); setTimeout(() => setToast(''), 3500) }} />}<footer className="statusbar"><span>⌁ {selectedProject?.name || '未选择项目'}</span><span>Rust heartbeat 4ms</span><span>Tokens 38.4k / 500k</span><span className="online">◉ WS Connected · 3 active</span></footer></div>
 }

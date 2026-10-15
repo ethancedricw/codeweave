@@ -6,6 +6,20 @@
 
 CodeWeave 是一个面向研发团队的开源 AI 协作工作台。它将 AI Agent、真实项目工作区、任务执行、人工审批、团队协作、审计追踪和知识库连接起来，让 AI 从“回答问题”走向“参与真实的软件研发流程”。
 
+## 产品截图
+
+| 登录页面 | 总览页面 |
+|---|---|
+| ![CodeWeave 登录页面](docs/screenshots/login.png) | ![CodeWeave 总览页面](docs/screenshots/overview.png) |
+
+| Agent 工作台 | 项目与工作区 |
+|---|---|
+| ![Agent 工作台](docs/screenshots/agent-workbench.png) | ![项目与工作区](docs/screenshots/projects.png) |
+
+| 工作区设置 |
+|---|
+| ![工作区设置](docs/screenshots/settings.png) |
+
 ## 核心能力
 
 - 带有项目和工作区上下文的 AI Agent 会话
@@ -38,17 +52,42 @@ codeweave/
 
 ## 快速启动
 
-### 启动后端依赖
+建议按以下顺序启动：基础设施、DeepSeek Harness、后端、前端。
+
+### 1. 启动基础设施
 
 ```powershell
 cd codeweave-backend
 docker compose up -d
+```
+
+这会启动 PostgreSQL、Redis 和 MinIO。
+
+### 2. 安装并启动 DeepSeek Harness
+
+二次开发后的 Harness 源码已经包含在本仓库中，需要 Node.js 22.19+ 和 pnpm 11.7+。
+
+```powershell
+cd ..\deepseek-harness
+corepack enable
+corepack prepare pnpm@11.7.0 --activate
+pnpm install
+pnpm run build
+pnpm dsh web --no-open
+```
+
+请保持这个终端运行。Harness 默认地址是 `http://127.0.0.1:3080`。
+
+### 3. 启动后端
+
+```powershell
+cd ..\codeweave-backend
 mvn spring-boot:run
 ```
 
 后端默认地址：`http://localhost:8080`
 
-### 启动前端
+### 4. 启动前端
 
 ```powershell
 cd codeweave-frontend
@@ -57,10 +96,6 @@ npm run dev
 ```
 
 前端默认地址：`http://localhost:5173`，并通过 Vite 将 `/api` 请求代理到后端。
-
-### 启动 DeepSeek Harness
-
-`deepseek-harness` 以二开后的源码形式包含在本仓库中。启动 Agent 运行时前，请先阅读该目录下的文档和 package scripts。CodeWeave 后端会按照应用配置连接 Harness 服务。
 
 ## 配置说明
 

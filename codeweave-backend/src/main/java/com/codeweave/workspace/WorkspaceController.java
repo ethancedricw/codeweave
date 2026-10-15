@@ -510,7 +510,20 @@ public class WorkspaceController {
   }
 
   private void requireOwner(Map<String,Object> project) {
-    if (!StpUtil.getLoginIdAsString().equals(String.valueOf(project.getOrDefault("ownerId", "")))) throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只有项目创建者可以执行此操作");
+    String userId = StpUtil.getLoginIdAsString();
+    // 1. 允许项目创建者删除
+    if (userId.equals(String.valueOf(project.getOrDefault("ownerId", "")))) return;
+    // 2. 允许管理员删除所有项目 - 从 Redis 读取用户角色
+    Object userRaw = redis.opsForHash().get("cw:settings:users", userId);
+    if (userRaw != null) {
+      try {
+        Map<String, Object> user = mapper.readValue(String.valueOf(userRaw), new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        if ("admin".equals(String.valueOf(user.getOrDefault("role", "")))) return;
+      } catch (Exception ignored) { }
+    }
+    // demo-user 默认是管理员
+    if ("demo-user".equals(userId)) return;
+    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只有项目创建者或管理员可以删除项目");
   }
 
   private Map<String, Object> publicProject(Map<String, Object> project) {
